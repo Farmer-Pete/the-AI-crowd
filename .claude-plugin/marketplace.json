@@ -1,0 +1,14 @@
+{
+  "name": "the-ai-crowd",
+  "description": "The AI Crowd: an IT Crowd-themed dashboard of every Claude Code session on your machine.",
+  "owner": {
+    "name": "Farmer-Pete"
+  },
+  "plugins": [
+    {
+      "name": "the-ai-crowd",
+      "source": "./plugin",
+      "description": "Reports what each Claude Code session is doing to The AI Crowd dashboard running on this machine."
+    }
+  ]
+}

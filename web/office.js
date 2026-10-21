@@ -1,0 +1,523 @@
+// The AI Crowd page: the office canvas, alerts, and everything that runs in the browser.
+// The server streams state over SSE. Datastar patches the list and header into the DOM,
+// and hands the _state and _toast signals to window.crowd.patched().
+
+// ============================================================================
+// State from the server
+// ============================================================================
+
+let settings = { muted: false, popBubbles: true, sound: "phone", urgentSound: true, urgentNotify: true, reviewSound: false, reviewNotify: true, tabCount: true, showDemo: false, hooksDismissed: false };
+let agents = [];            // latest from the server, plus ghosts of sessions that just left
+let hooks = false;          // has the plugin sent any hook event?
+let alertsEnabled = "Notification" in window && Notification.permission === "granted";
+const lastSaid = new Map(); // id -> "state|detail" from the previous update
+const pops = new Map();     // id -> when its line last changed, for pop-up bubbles
+const POP_MS = 6000;
+const ghosts = new Map();   // live agents that vanished: id -> {agent, until}
+const prevTier = new Map();
+
+// The detail line means different things by state, so it always carries its label.
+const DETAIL_LABEL = { working: "Now", permission: "Asks", question: "Asks", waiting: "Asks", error: "Error", review: "Result", idle: "Last", ended: "" };
+
+// Every action goes through Datastar's @post on the hidden #actions element.
+function post(path) {
+  document.getElementById("actions").dispatchEvent(new CustomEvent("crowd-post", { detail: path }));
+}
+
+// ============================================================================
+// Characters: seeded from the session id, drawn in code at 32x32-ish
+// ============================================================================
+
+function hash(str) { let h = 2166136261; for (const c of str) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function rng(seed) { return () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const pick = (r, arr) => arr[Math.floor(r() * arr.length)];
+
+// Archetypes nod to the show's basement and upstairs crowd without copying anyone.
+const ARCHETYPES = [
+  { hair: "fro",     outfit: "tee",      glasses: 0.2 },  // the slacker
+  { hair: "part",    outfit: "vest",     glasses: 0.95 }, // the genius
+  { hair: "bob",     outfit: "blazer",   glasses: 0.1 },  // the manager
+  { hair: "goth",    outfit: "black",    glasses: 0.0 },  // the one behind the red door
+  { hair: "slick",   outfit: "suit",     glasses: 0.1 },  // the boss upstairs
+  { hair: "receding",outfit: "cardigan", glasses: 0.6 },  // the old hand
+];
+const SKIN = ["#f2d0b1", "#e0ac83", "#c68a5c", "#9c6640", "#6e4529", "#f5dccb"];
+const HAIR = ["#2a1b10", "#4a2e19", "#6b4423", "#b5651d", "#d8b25a", "#111111", "#7a7a7a"];
+const TEES = ["#c0392b", "#2c7fb8", "#3a8c4e", "#8e44ad", "#d35400", "#34495e", "#b03a6f"];
+
+const looks = new Map();
+function lookFor(id) {
+  if (looks.has(id)) return looks.get(id);
+  const r = rng(hash(id));
+  const arch = pick(r, ARCHETYPES);
+  const look = {
+    ...arch,
+    skin: arch.hair === "goth" ? "#f3e6e3" : pick(r, SKIN),
+    hairColor: arch.hair === "goth" ? "#0b0b0b" : pick(r, HAIR),
+    shirt: arch.outfit === "black" ? "#1a1a1a" : arch.outfit === "suit" ? "#2d3142" : pick(r, TEES),
+    accent: pick(r, TEES),
+    glasses: r() < arch.glasses,
+    print: pick(r, ["0101", "404", ":)", "RTFM", ">_", "∞"]),
+  };
+  looks.set(id, look);
+  return look;
+}
+
+// px(ctx, x, y, w, h, color): one logical pixel block
+function px(c, x, y, w, h, col) { c.fillStyle = col; c.fillRect(x, y, w, h); }
+
+// Draws a seated person, head top-left at (x, y), 16 wide. pose picks arms and head.
+function drawPerson(c, x, y, look, pose, t) {
+  const cx = x + 8;
+  const bob = pose === "working" ? (Math.floor(t * 4) % 2) : 0;
+  const headY = pose === "idle" ? y + 9 : pose === "review" ? y - 1 : y;
+  // torso
+  px(c, cx - 6, y + 11, 12, 11, look.shirt);
+  if (look.outfit === "vest") { px(c, cx - 6, y + 11, 12, 11, "#e9e4d4"); px(c, cx - 5, y + 13, 10, 9, look.accent); px(c, cx - 1, y + 11, 2, 3, "#e9e4d4"); }
+  if (look.outfit === "suit" || look.outfit === "blazer") { px(c, cx - 1, y + 11, 2, 11, "#ece8dc"); px(c, cx, y + 12, 1, 7, look.outfit === "suit" ? "#8b1e2b" : look.accent); }
+  if (look.outfit === "cardigan") { px(c, cx - 1, y + 11, 2, 11, "#d7cfb7"); }
+  if (look.outfit === "tee") { c.fillStyle = "#ffffffcc"; c.font = "3px monospace"; px(c, cx - 3, y + 15, 6, 3, "#ffffff33"); }
+  // arms
+  const sleeve = look.outfit === "tee" ? look.skin : look.shirt;
+  if (pose === "working") {
+    px(c, cx - 8, y + 12, 2, 8, sleeve); px(c, cx + 6, y + 12, 2, 8, sleeve);
+    px(c, cx - 7, y + 19 - bob, 3, 2, look.skin); px(c, cx + 4, y + 18 + bob, 3, 2, look.skin);
+  } else if (pose === "question") {
+    px(c, cx - 8, y + 12, 2, 9, sleeve); px(c, cx + 6, y - 4, 2, 16, sleeve); px(c, cx + 6, y - 6, 2, 2, look.skin);
+  } else if (pose === "error") {
+    px(c, cx - 8, y - 4, 2, 16, sleeve); px(c, cx + 6, y - 4, 2, 16, sleeve);
+    px(c, cx - 8, y - 6, 2, 2, look.skin); px(c, cx + 6, y - 6, 2, 2, look.skin);
+  } else if (pose === "permission") {
+    px(c, cx - 8, y + 12, 2, 9, sleeve); px(c, cx + 6, y + 4, 2, 8, sleeve); px(c, cx + 5, y + 3, 3, 3, look.skin);
+  } else if (pose === "idle") {
+    px(c, cx - 8, y + 17, 16, 3, sleeve);
+  } else {
+    px(c, cx - 8, y + 12, 2, 9, sleeve); px(c, cx + 6, y + 12, 2, 9, sleeve);
+  }
+  // head
+  px(c, cx - 5, headY + 1, 10, 10, look.skin);
+  // hair
+  const h = look.hairColor;
+  switch (look.hair) {
+    case "fro": px(c, cx - 7, headY - 3, 14, 6, h); px(c, cx - 7, headY + 3, 2, 5, h); px(c, cx + 5, headY + 3, 2, 5, h); break;
+    case "part": px(c, cx - 5, headY - 1, 10, 3, h); px(c, cx - 5, headY + 2, 2, 2, h); px(c, cx + 1, headY - 1, 1, 1, look.skin); break;
+    case "bob": px(c, cx - 6, headY - 1, 12, 4, h); px(c, cx - 6, headY + 3, 2, 8, h); px(c, cx + 4, headY + 3, 2, 8, h); break;
+    case "goth": px(c, cx - 6, headY - 1, 12, 3, h); px(c, cx - 6, headY + 2, 2, 13, h); px(c, cx + 4, headY + 2, 2, 13, h); break;
+    case "slick": px(c, cx - 5, headY - 1, 10, 3, h); px(c, cx + 3, headY + 2, 2, 2, h); break;
+    case "receding": px(c, cx - 5, headY + 2, 2, 4, h); px(c, cx + 3, headY + 2, 2, 4, h); break;
+  }
+  if (pose === "idle") return; // face down on the desk
+  // face
+  const eyeY = headY + 5;
+  const look2 = pose === "permission" ? -1 : 0;
+  if (pose === "review") { px(c, cx - 3, eyeY, 2, 1, "#222"); px(c, cx + 1, eyeY, 2, 1, "#222"); }
+  else { px(c, cx - 3 + look2, eyeY, 1, 2, "#222"); px(c, cx + 2 + look2, eyeY, 1, 2, "#222"); }
+  if (look.glasses) { c.strokeStyle = "#222"; c.lineWidth = 0.6; c.strokeRect(cx - 4.5, eyeY - 0.8, 3.5, 3); c.strokeRect(cx + 0.8, eyeY - 0.8, 3.5, 3); }
+  if (pose === "error") px(c, cx - 1, headY + 8, 3, 2, "#5a1a1a");
+  else if (pose === "review") px(c, cx - 2, headY + 8, 4, 1, "#7a3b2a");
+  else px(c, cx - 1, headY + 8, 2, 1, "#7a3b2a");
+}
+
+// Little glyph bubbles, drawn as pixel blocks.
+const GLYPHS = {
+  "!": ["010", "010", "010", "000", "010"],
+  "?": ["111", "001", "011", "000", "010"],
+  "z": ["111", "001", "010", "100", "111"],
+};
+function glyph(c, ch, x, y, col) { GLYPHS[ch].forEach((row, j) => [...row].forEach((b, i) => b === "1" && px(c, x + i, y + j, 1, 1, col))); }
+function bubble(c, x, y, chars, col) {
+  const w = chars.length * 4 + 3;
+  px(c, x, y, w, 9, "#fdfbf3"); px(c, x + 2, y + 9, 2, 2, "#fdfbf3");
+  [...chars].forEach((ch, i) => glyph(c, ch, x + 2 + i * 4, y + 2, col));
+}
+
+// ============================================================================
+// Office scene
+// ============================================================================
+
+const CELL_W = 56, CELL_H = 56, WALL_H = 30, PAD = 6;
+
+function deskSlots(list, cols) {
+  return list.map((a, i) => ({ a, x: PAD + (i % cols) * CELL_W, y: WALL_H + 6 + Math.floor(i / cols) * CELL_H }));
+}
+
+// Desk order is stable: first seen, first seated.
+const seatOrder = [];
+function seated(list) {
+  for (const a of list) if (!seatOrder.includes(a.id)) seatOrder.push(a.id);
+  const byId = new Map(list.map((a) => [a.id, a]));
+  for (let i = seatOrder.length - 1; i >= 0; i--) if (!byId.has(seatOrder[i])) seatOrder.splice(i, 1);
+  return seatOrder.map((id) => byId.get(id));
+}
+
+const ALERTS_X = 64, CHATTER_X = 112;
+function drawSwitch(c, x, on) {
+  px(c, x, 3, 14, 21, "#d9cfb2"); px(c, x + 1, 4, 12, 19, "#e8e1c8");
+  px(c, x + 4, 6, 6, 13, "#3a3a3a");
+  if (on) { px(c, x + 4, 6, 6, 6, "#3a8c4e"); px(c, x + 5, 4, 4, 4, "#2c6b3b"); }
+  else { px(c, x + 4, 13, 6, 6, "#c0392b"); px(c, x + 5, 17, 4, 4, "#8f2a1f"); }
+}
+
+// chatterSwitch: only offices big enough to show speech bubbles get the chatter switch.
+function drawRoom(c, w, h, t, chatterSwitch) {
+  // carpet
+  for (let y = WALL_H; y < h; y += 8) for (let x = 0; x < w; x += 8) px(c, x, y, 8, 8, ((x + y) / 8) % 2 ? "#3b3a33" : "#36352f");
+  // wall with bricks
+  px(c, 0, 0, w, WALL_H, "#4b5145");
+  for (let y = 0; y < WALL_H - 4; y += 5) for (let x = (y / 5) % 2 ? -6 : 0; x < w; x += 12) px(c, x, y, 11, 4, "#545a4c");
+  px(c, 0, WALL_H - 3, w, 3, "#2c2f29");
+  // a sign, a poster, the fire extinguisher, a window to the street
+  px(c, 8, 6, 46, 12, "#1d1f1b");
+  // wall switches: lever up means on, down means off
+  drawSwitch(c, ALERTS_X, !settings.muted);
+  if (chatterSwitch) drawSwitch(c, CHATTER_X, settings.popBubbles);
+  // fire extinguisher on a wall bracket: body, shoulder, valve, handle, hose, label band
+  const ex = w - 20;
+  px(c, ex - 1, 12, 9, 2, "#6b6b6b");
+  px(c, ex, 9, 7, 15, "#c0221a"); px(c, ex + 1, 8, 5, 1, "#c0221a"); px(c, ex + 1, 9, 1, 14, "#e0463a");
+  px(c, ex, 15, 7, 3, "#f0ede4"); px(c, ex + 2, 16, 3, 1, "#c0221a");
+  px(c, ex + 2, 5, 3, 3, "#222"); px(c, ex + 1, 4, 6, 1, "#444"); px(c, ex + 5, 3, 3, 1, "#444");
+  px(c, ex + 7, 6, 1, 1, "#222"); px(c, ex + 8, 7, 1, 8, "#222"); px(c, ex + 7, 15, 1, 2, "#222");
+  // wall clock showing the real local time
+  if (w > 220) {
+    const ox = w - 42, oy = 13, now = new Date();
+    c.fillStyle = "#2a2a2a"; c.beginPath(); c.arc(ox, oy, 9, 0, 7); c.fill();
+    c.fillStyle = "#f3eedc"; c.beginPath(); c.arc(ox, oy, 7.5, 0, 7); c.fill();
+    for (let i = 0; i < 12; i += 3) { const a = (i / 12) * Math.PI * 2; px(c, Math.round(ox + Math.sin(a) * 6) - 0.5, Math.round(oy - Math.cos(a) * 6) - 0.5, 1, 1, "#2a2a2a"); }
+    const hand = (frac, len, width, col) => { const a = frac * Math.PI * 2; c.strokeStyle = col; c.lineWidth = width; c.beginPath(); c.moveTo(ox, oy); c.lineTo(ox + Math.sin(a) * len, oy - Math.cos(a) * len); c.stroke(); };
+    hand(((now.getHours() % 12) + now.getMinutes() / 60) / 12, 3.8, 1.2, "#2a2a2a");
+    hand((now.getMinutes() + now.getSeconds() / 60) / 60, 5.6, 0.9, "#2a2a2a");
+    hand(now.getSeconds() / 60, 6, 0.4, "#c0221a");
+  }
+}
+
+function drawDesk(c, s, t) {
+  const { a, x, y } = s;
+  const tier = a.tier;
+  const pulse = 0.35 + 0.35 * Math.sin(t * 6);
+  // attention outline
+  if (tier === "urgent") { c.strokeStyle = `rgba(255,77,61,${pulse + 0.2})`; c.lineWidth = 1.5; c.strokeRect(x + 1, y - 8, CELL_W - 4, 54); }
+  if (tier === "review") { c.strokeStyle = "rgba(242,178,51,.55)"; c.lineWidth = 1; c.strokeRect(x + 1, y - 8, CELL_W - 4, 54); }
+  // chair
+  px(c, x + 12, y + 4, 16, 18, "#2a2d35");
+  if (a.state !== "ended" && a.state !== "idle") drawPerson(c, x + 12, y + 2, lookFor(a.id), a.state === "waiting" ? "permission" : a.state === "seen" ? "review" : a.state, t);
+  // desk
+  px(c, x + 2, y + 22, 48, 5, "#8a5a33"); px(c, x + 2, y + 27, 48, 2, "#6b4426");
+  px(c, x + 4, y + 29, 3, 8, "#5a381f"); px(c, x + 45, y + 29, 3, 8, "#5a381f");
+  // monitor
+  const mx = x + 31, my = y + 8;
+  px(c, mx, my, 17, 14, "#cfc6aa"); px(c, mx + 6, my + 14, 5, 2, "#b3aa8e");
+  const scr = (col) => px(c, mx + 2, my + 2, 13, 9, col);
+  switch (a.state) {
+    case "working": scr("#0d1a10"); for (let i = 0; i < 4; i++) px(c, mx + 3, my + 3 + i * 2, 3 + ((Math.floor(t * 5) + i * 3) % 9), 1, "#7dff8a"); break;
+    case "error": scr("#050505"); break;
+    case "review": scr("#0d1a10"); px(c, mx + 5, my + 6, 2, 2, "#7dff8a"); px(c, mx + 7, my + 7, 2, 2, "#7dff8a"); px(c, mx + 9, my + 4, 2, 3, "#7dff8a"); break;
+    case "idle": scr("#06070c"); px(c, mx + 3 + Math.floor(t * 3) % 10, my + 3 + Math.floor(t * 2) % 7, 2, 2, "#3d6bff"); break;
+    case "ended": scr("#111"); break;
+    default: scr("#0d1a10"); glyph(c, "?", mx + 7, my + 4, "#7dff8a");
+  }
+  // red phone on the desk
+  const ringing = a.state === "permission" || a.state === "waiting";
+  const shake = ringing ? (Math.floor(t * 20) % 2 ? 1 : -1) : 0;
+  px(c, x + 4 + shake, y + 18, 8, 4, "#c0221a"); px(c, x + 3 + shake, y + 16, 10, 2, "#e0362b");
+  if (ringing && Math.floor(t * 3) % 2) { px(c, x + 1, y + 13, 1, 2, "#fff"); px(c, x + 14, y + 13, 1, 2, "#fff"); }
+  // mug of tea for review
+  if (a.state === "review") { px(c, x + 25, y + 18, 4, 4, "#f0ede4"); px(c, x + 29, y + 19, 1, 2, "#f0ede4"); px(c, x + 26 + (Math.floor(t * 2) % 2), y + 14 - (Math.floor(t * 3) % 3), 1, 2, "#ffffff88"); }
+  // fire and smoke for errors
+  if (a.state === "error") {
+    for (let i = 0; i < 4; i++) { const p = (t * 1.5 + i * 0.25) % 1; px(c, mx + 4 + i * 3 + Math.sin(t * 3 + i) * 2, my - 2 - p * 14, 3, 3, `rgba(150,150,150,${1 - p})`); }
+    for (let i = 0; i < 4; i++) px(c, mx + 2 + i * 4, my + 10 - (Math.floor(t * 12 + i) % 3), 3, 3, i % 2 ? "#ffcc33" : "#ff6a1a");
+  }
+  // bubbles
+  if (a.state === "permission") bubble(c, x + 6, y - 9, "!", "#d22");
+  if (a.state === "question") bubble(c, x + 6, y - 9, "?", "#2a62d4");
+  if (a.state === "waiting") bubble(c, x + 4, y - 9, "!?", "#d22");
+  if (a.state === "error") bubble(c, x + 6, y - 9, "!", "#d22");
+  // asleep: an empty chair with z's drifting up from it
+  if (a.state === "idle") for (let i = 0; i < 2; i++) { const p = (t * 0.5 + i * 0.5) % 1; glyph(c, "z", x + 17 + p * 6, y + 8 - p * 14, `rgba(220,220,255,${1 - p})`); }
+  // helpers (subagents): one badge above the desk, a tiny figure plus a count drawn in the label pass
+  if (a.helpers.length) {
+    const bx = x + 36, by = y - 9;
+    px(c, bx, by, 16, 9, "#fdfbf3"); px(c, bx + 2, by + 9, 2, 2, "#fdfbf3");
+    px(c, bx + 2, by + 1, 3, 3, "#c68a5c"); px(c, bx + 1, by + 4, 5, 4, "#2c7fb8");
+  }
+}
+function wrap(c, text, maxW, maxLines = 3) {
+  const lines = [];
+  let line = "";
+  for (const word of text.split(" ")) {
+    const next = line ? `${line} ${word}` : word;
+    if (c.measureText(next).width > maxW && line) { lines.push(line); line = word; } else line = next;
+  }
+  if (line) lines.push(line);
+  if (lines.length > maxLines) { lines.length = maxLines; lines[maxLines - 1] = lines[maxLines - 1].replace(/.{0,2}$/, "…"); }
+  return lines;
+}
+
+// A speech bubble above a desk, in real pixels. Urgent ones are paper white with a red edge;
+// hover ones are a green-on-black thought from the monitor.
+function speech(c, s, scale, lw, alpha = 1) {
+  const a = s.a;
+  c.globalAlpha = alpha;
+  const urgent = a.tier === "urgent";
+  const label = DETAIL_LABEL[a.state];
+  c.font = '12px "IBM Plex Mono", monospace';
+  const lines = wrap(c, `${label ? label.toUpperCase() + ": " : ""}${a.detail}`, CELL_W * scale - 30, 4);
+  const w = Math.max(...lines.map((l) => c.measureText(l).width)) + 18;
+  const h = lines.length * 15 + 11;
+  const tx = (s.x + CELL_W / 2) * scale;
+  const x = tx - w / 2;
+  const y = (s.y - 11) * scale - h;
+  c.fillStyle = urgent ? "#fdfbf3" : "#0d1a10";
+  c.strokeStyle = urgent ? "#ff4d3d" : "#7dff8a";
+  c.lineWidth = 2;
+  c.beginPath(); c.roundRect(x, y, w, h, 6); c.fill(); c.stroke();
+  c.beginPath(); c.moveTo(tx - 6, y + h - 1); c.lineTo(tx, y + h + 8); c.lineTo(tx + 6, y + h - 1); c.fill();
+  c.fillStyle = urgent ? "#26241d" : "#7dff8a";
+  c.textAlign = "left";
+  lines.forEach((l, i) => c.fillText(l, x + 9, y + 18 + i * 15));
+  c.globalAlpha = 1;
+}
+
+// Hit areas on the office wall, in logical pixels.
+const onSwitch = (lx, ly) => lx >= ALERTS_X && lx < ALERTS_X + 14 && ly >= 3 && ly < 24;
+const onChatter = (lx, ly, scale) => scale >= 2 && lx >= CHATTER_X && lx < CHATTER_X + 14 && ly >= 3 && ly < 24;
+const onExtinguisher = (lx, ly, w) => lx >= w - 21 && lx < w - 10 && ly >= 3 && ly < 25;
+
+const badgeHit = (s, lx, ly) => s.a.helpers.length && lx >= s.x + 36 && lx < s.x + 52 && ly >= s.y - 9 && ly < s.y;
+
+// Mounts a canvas office into `host`. scale = screen pixels per logical pixel.
+function mountOffice(host, scale) {
+  const canvas = document.createElement("canvas");
+  canvas.className = "office";
+  host.appendChild(canvas);
+  const c = canvas.getContext("2d");
+  let slots = [];
+  canvas.addEventListener("click", (e) => {
+    const r = canvas.getBoundingClientRect();
+    const lx = (e.clientX - r.left) / scale, ly = (e.clientY - r.top) / scale;
+    if (onSwitch(lx, ly)) return post("/api/settings/muted/toggle");
+    if (onChatter(lx, ly, scale)) return post("/api/settings/popBubbles/toggle");
+    if (onExtinguisher(lx, ly, lw)) return post("/api/fire");
+    const hit = slots.find((s) => lx >= s.x && lx < s.x + CELL_W && ly >= s.y - 10 && ly < s.y + CELL_H - 10);
+    if (hit) post(`/api/jump/${encodeURIComponent(hit.a.id)}`);
+  });
+  canvas.addEventListener("mousemove", (e) => {
+    const r = canvas.getBoundingClientRect();
+    const lx = (e.clientX - r.left) / scale, ly = (e.clientY - r.top) / scale;
+    const hit = slots.find((s) => badgeHit(s, lx, ly));
+    hoverId = slots.find((s) => lx >= s.x && lx < s.x + CELL_W && ly >= s.y - 10 && ly < s.y + CELL_H - 10)?.a.id;
+    canvas.title = onSwitch(lx, ly) ? (settings.muted ? "Turn alerts back on" : "Mute all alerts")
+      : onChatter(lx, ly, scale) ? (settings.popBubbles ? "Turn off chatter: only urgent asks pop up" : "Turn chatter back on")
+      : onExtinguisher(lx, ly, lw) ? "Put out the oldest fire"
+      : hit ? `Helpers: ${hit.a.helpers.map((h) => h.label).join(", ")}` : "";
+  });
+  canvas.addEventListener("mouseleave", () => { hoverId = undefined; });
+  let alive = true;
+  let lw = 0;
+  let hoverId;
+  function frame(ms) {
+    if (!alive) return;
+    const t = ms / 1000;
+    const wpx = host.clientWidth || 600;
+    lw = Math.floor(wpx / scale);
+    const cols = Math.max(1, Math.floor((lw - PAD * 2) / CELL_W));
+    const list = seated(agents);
+    const rows = Math.max(2, Math.ceil(list.length / cols));
+    const lh = WALL_H + 8 + rows * CELL_H;
+    if (canvas.width !== lw * scale || canvas.height !== lh * scale) { canvas.width = lw * scale; canvas.height = lh * scale; }
+    c.setTransform(scale, 0, 0, scale, 0, 0);
+    c.imageSmoothingEnabled = false;
+    drawRoom(c, lw, lh, t, scale >= 2);
+    slots = deskSlots(list, cols);
+    slots.forEach((s) => drawDesk(c, s, t));
+    // name labels in real pixels so they stay sharp
+    c.setTransform(1, 0, 0, 1, 0, 0);
+    c.font = `${Math.max(8, scale * 3.6)}px "IBM Plex Mono", monospace`;
+    c.textAlign = "center";
+    for (const s of slots) {
+      const max = scale < 2 ? 11 : 18;
+      const name = s.a.title.length > max ? s.a.title.slice(0, max - 1) + "…" : s.a.title;
+      const label = s.a.state === "ended" ? "(left)" : name;
+      const ly = (s.y + 43) * scale;
+      c.fillStyle = "#000a"; c.fillText(label, (s.x + CELL_W / 2) * scale + 1, ly + 1);
+      c.fillStyle = s.a.tier === "urgent" ? "#ff8a7d" : s.a.tier === "review" ? "#f6cd74" : "#d9d4c4";
+      c.fillText(label, (s.x + CELL_W / 2) * scale, ly);
+    }
+    c.textAlign = "left";
+    c.font = `${scale * 4}px "Press Start 2P", monospace`; c.fillStyle = "#e7d27a"; c.fillText("AI DEPT", 11 * scale, 15 * scale);
+    c.font = `600 ${scale * 3.4}px "IBM Plex Mono", monospace`; c.fillStyle = settings.muted ? "#ff8a7d" : "#e7d27a"; c.fillText(settings.muted ? "ALERTS OFF" : "ALERTS ON", (ALERTS_X + 16) * scale, 15 * scale);
+    if (scale >= 2) { c.fillStyle = settings.popBubbles ? "#e7d27a" : "#ff8a7d"; c.fillText(settings.popBubbles ? "CHATTER ON" : "CHATTER OFF", (CHATTER_X + 16) * scale, 15 * scale); }
+    c.font = `600 ${scale * 4}px "IBM Plex Mono", monospace`; c.fillStyle = "#222";
+    for (const s of slots) if (s.a.helpers.length) c.fillText(`×${s.a.helpers.length}`, (s.x + 43) * scale, (s.y - 2) * scale);
+    // Urgent desks always say what they're asking. Hovering any desk shows its detail line.
+    // A changed line pops up for a few seconds, fading in fast and out slowly.
+    if (scale >= 2) {
+      const nowMs = Date.now();
+      const popAlpha = (id) => {
+        const age = nowMs - (pops.get(id) ?? -Infinity);
+        return settings.popBubbles && age < POP_MS ? Math.min(1, age / 200, (POP_MS - age) / 1000) : 0;
+      };
+      const show = slots
+        .map((s) => ({ s, alpha: s.a.tier === "urgent" || s.a.id === hoverId ? 1 : popAlpha(s.a.id) }))
+        .filter((b) => b.s.a.state !== "ended" && b.alpha > 0);
+      show.sort((p, q) => (p.s.a.id === hoverId) - (q.s.a.id === hoverId));
+      for (const b of show) speech(c, b.s, scale, lw, b.alpha);
+    }
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+  return { destroy() { alive = false; } };
+}
+
+const portraits = new Map();
+function portrait(a) {
+  if (portraits.has(a.id)) return portraits.get(a.id);
+  const cv = document.createElement("canvas");
+  cv.width = 24; cv.height = 24;
+  const c = cv.getContext("2d");
+  px(c, 0, 0, 24, 24, "#2c3b33");
+  drawPerson(c, 4, 6, lookFor(a.id), "still", 0);
+  const url = cv.toDataURL();
+  portraits.set(a.id, url);
+  return url;
+}
+
+// ============================================================================
+// Updates, alerts, settings, chrome
+// ============================================================================
+
+// Live sessions that vanish linger for a few seconds as an empty desk.
+function withGhosts(list) {
+  const now = Date.now();
+  const ids = new Set(list.map((a) => a.id));
+  for (const a of agents) if (a.source === "live" && !ids.has(a.id) && !ghosts.has(a.id)) ghosts.set(a.id, { agent: { ...a, state: "ended", tier: "quiet" }, until: now + 6000 });
+  for (const [id, g] of ghosts) if (g.until < now || ids.has(id)) ghosts.delete(id);
+  return [...list, ...[...ghosts.values()].map((g) => g.agent)];
+}
+
+function update(state) {
+  settings = state.settings;
+  hooks = state.hooks;
+  for (const a of state.agents) {
+    const said = `${a.state}|${a.detail}`;
+    if (lastSaid.has(a.id) && lastSaid.get(a.id) !== said) pops.set(a.id, Date.now());
+    lastSaid.set(a.id, said);
+  }
+  agents = withGhosts(state.agents);
+  alertOnChanges();
+  syncSettingsForm();
+  showBars();
+}
+
+let toastTimer;
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
+}
+
+let audio;
+function ring() {
+  if (!audio || audio.state !== "running" || settings.muted) return;
+  const now = audio.currentTime;
+  const bursts = settings.sound === "phone" ? [[0, 0.35], [0.5, 0.35]] : [[0, 0.12]];
+  for (const [at, dur] of bursts) {
+    for (const f of settings.sound === "phone" ? [400, 450] : [880]) {
+      const o = audio.createOscillator(), g = audio.createGain();
+      o.frequency.value = f; o.type = "sine";
+      g.gain.setValueAtTime(0.0001, now + at); g.gain.exponentialRampToValueAtTime(0.12, now + at + 0.02);
+      g.gain.setValueAtTime(0.12, now + at + dur - 0.03); g.gain.exponentialRampToValueAtTime(0.0001, now + at + dur);
+      o.connect(g).connect(audio.destination); o.start(now + at); o.stop(now + at + dur);
+    }
+  }
+}
+
+function notify(a) {
+  if (settings.muted || !("Notification" in window) || Notification.permission !== "granted") return;
+  new Notification(`${a.title}: ${a.label}`, { body: a.detail, tag: a.id });
+}
+
+// Browsers only allow sound after a click on the page, so any click unlocks it.
+function unlockAudio() {
+  audio ??= new AudioContext();
+  return audio.resume();
+}
+addEventListener("pointerdown", unlockAudio, { once: true });
+
+function alertOnChanges() {
+  for (const a of agents) {
+    const before = prevTier.get(a.id);
+    prevTier.set(a.id, a.tier);
+    if (before === undefined || before === a.tier) continue;
+    if (a.tier === "urgent") { if (settings.urgentSound) ring(); if (settings.urgentNotify) notify(a); }
+    if (a.tier === "review") { if (settings.reviewSound) ring(); if (settings.reviewNotify) notify(a); }
+  }
+  const n = agents.filter((a) => a.tier === "urgent" && a.state !== "ended").length;
+  const counted = settings.tabCount && n;
+  document.title = counted ? `(${n}) The AI Crowd` : "The AI Crowd";
+  const fav = document.createElement("canvas");
+  fav.width = fav.height = 32;
+  const fc = fav.getContext("2d");
+  px(fc, 4, 10, 24, 14, "#c0221a"); px(fc, 2, 6, 28, 5, "#e0362b");
+  if (counted) { fc.fillStyle = "#fff"; fc.beginPath(); fc.arc(24, 8, 8, 0, 7); fc.fill(); fc.fillStyle = "#c0221a"; fc.font = "bold 13px sans-serif"; fc.textAlign = "center"; fc.fillText(n, 24, 13); }
+  document.getElementById("favicon").href = fav.toDataURL();
+}
+
+function readFlag(key) { try { return localStorage.getItem(key) === "1"; } catch { return false; } }
+function writeFlag(key) { try { localStorage.setItem(key, "1"); } catch { /* private window */ } }
+
+function showBars() {
+  document.getElementById("alerts-bar").hidden = alertsEnabled || readFlag("alertsBarDismissed");
+  document.getElementById("hooks-bar").hidden = hooks || settings.hooksDismissed || !agents.some((a) => a.source === "live");
+}
+
+const dlg = document.getElementById("settings");
+function syncSettingsForm() {
+  dlg.querySelectorAll("[data-set]").forEach((el) => {
+    if (el === document.activeElement) return;
+    const v = settings[el.dataset.set];
+    if (el.type === "checkbox") el.checked = v; else el.value = v;
+  });
+}
+dlg.querySelectorAll("[data-set]").forEach((el) => {
+  el.addEventListener("change", () => post(`/api/settings/${el.dataset.set}/${el.type === "checkbox" ? el.checked : el.value}`));
+});
+
+document.addEventListener("click", async (e) => {
+  const act = e.target.closest("[data-act]")?.dataset.act;
+  if (act === "settings") dlg.showModal();
+  if (act === "close-settings") dlg.close();
+  if (act === "dismiss-alerts") { writeFlag("alertsBarDismissed"); showBars(); }
+  if (act === "dismiss-hooks") post("/api/settings/hooksDismissed/true");
+  if (act === "test-sound") { await unlockAudio(); ring(); }
+  if (act === "enable") {
+    await unlockAudio();
+    if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
+    alertsEnabled = true;
+    ring();
+    toast("Alerts enabled. That was the red phone.");
+    showBars();
+  }
+});
+
+// The server renders <img data-portrait="id">; the browser draws the face. A MutationObserver
+// fills each one before paint, including after Datastar morphs the list.
+function fillPortraits() {
+  document.querySelectorAll("img[data-portrait]").forEach((im) => {
+    const url = portrait({ id: im.dataset.portrait });
+    if (im.getAttribute("src") !== url) im.src = url;
+  });
+}
+new MutationObserver(fillPortraits).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "data-portrait"] });
+
+mountOffice(document.getElementById("office"), 3);
+
+window.crowd = {
+  patched(patch) {
+    if (typeof patch?._state === "string") update(JSON.parse(patch._state));
+    if (typeof patch?._toast === "string") toast(JSON.parse(patch._toast).text);
+  },
+};

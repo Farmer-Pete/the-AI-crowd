@@ -1,0 +1,13 @@
+{
+  "name": "the-ai-crowd",
+  "private": true,
+  "type": "module",
+  "description": "An IT Crowd-themed dashboard of every Claude Code session on your machine.",
+  "scripts": {
+    "start": "node src/server.ts",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=26"
+  }
+}

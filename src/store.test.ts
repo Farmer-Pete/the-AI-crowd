@@ -1,0 +1,158 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { ASLEEP_AFTER_MS, createStore, type HookEvent } from "./store.ts";
+import type { RegistryEntry } from "./registry.ts";
+
+function setup() {
+  let now = 1_000_000;
+  const store = createStore(() => now);
+  const hook = (hook_event_name: string, extra: Partial<HookEvent> = {}) =>
+    store.applyHook({ hook_event_name, session_id: "s1", cwd: "/work/api", ...extra });
+  const one = () => store.view().find((a) => a.id === "s1");
+  return { store, hook, one, tick: (ms: number) => (now += ms) };
+}
+
+test("a prompt and a tool call make the session work on that tool", () => {
+  const { hook, one } = setup();
+  hook("UserPromptSubmit");
+  hook("PreToolUse", { tool_name: "Edit", tool_input: { file_path: "/work/api/src/retry.ts" } });
+  assert.equal(one()?.state, "working");
+  assert.equal(one()?.tier, "quiet");
+  assert.equal(one()?.detail, "Editing src/retry.ts");
+});
+
+test("a permission request is urgent and says what it wants", () => {
+  const { hook, one } = setup();
+  hook("PermissionRequest", { tool_name: "Bash", tool_input: { command: "rm -rf build", description: "Clean the build" } });
+  assert.equal(one()?.tier, "urgent");
+  assert.equal(one()?.label, "Needs permission");
+  assert.equal(one()?.detail, "Clean the build?");
+});
+
+test("AskUserQuestion is a question", () => {
+  const { hook, one } = setup();
+  hook("PreToolUse", { tool_name: "AskUserQuestion", tool_input: { questions: [{ question: "Squash the migrations?" }] } });
+  assert.equal(one()?.state, "question");
+  assert.equal(one()?.detail, "Squash the migrations?");
+});
+
+test("a finished turn waits in Review until seen, then sleeps 30 minutes after that", () => {
+  const { store, hook, one, tick } = setup();
+  hook("Stop", { last_assistant_message: "## Done\nRetries back off now." });
+  assert.equal(one()?.tier, "review");
+  assert.equal(one()?.detail, "Done");
+  tick(2 * ASLEEP_AFTER_MS);
+  assert.equal(one()?.tier, "review", "unseen work never falls asleep");
+  store.markSeen(one()!);
+  assert.equal(one()?.tier, "quiet");
+  assert.equal(one()?.label, "Seen");
+  tick(ASLEEP_AFTER_MS);
+  assert.equal(one()?.state, "idle");
+  assert.equal(one()?.label, "Asleep");
+});
+
+test("a new turn after being seen asks for review again", () => {
+  const { store, hook, one, tick } = setup();
+  hook("Stop");
+  store.markSeen(one()!);
+  tick(1000);
+  hook("UserPromptSubmit");
+  tick(1000);
+  hook("Stop");
+  assert.equal(one()?.tier, "review");
+});
+
+test("the wait clock restarts on a state change, not on a new detail line", () => {
+  const { hook, one, tick } = setup();
+  hook("UserPromptSubmit");
+  const started = one()!.since;
+  tick(5000);
+  hook("PreToolUse", { tool_name: "Read", tool_input: { file_path: "/work/api/a.ts" } });
+  assert.equal(one()?.since, started);
+  hook("PermissionRequest", { tool_name: "Bash", tool_input: { command: "make" } });
+  assert.equal(one()?.since, started + 5000);
+});
+
+test("API failures are urgent errors", () => {
+  const { hook, one } = setup();
+  hook("StopFailure", { error: "rate_limit" });
+  assert.equal(one()?.tier, "urgent");
+  assert.equal(one()?.detail, "API error: rate_limit. The turn stopped.");
+});
+
+test("subagents come and go as helpers", () => {
+  const { hook, one } = setup();
+  hook("SubagentStart", { agent_id: "a1", agent_type: "Explore" });
+  hook("SubagentStart", { agent_id: "a2", agent_type: "general-purpose" });
+  hook("SubagentStop", { agent_id: "a1" });
+  assert.deepEqual(one()?.helpers, [{ id: "a2", label: "general-purpose" }]);
+});
+
+test("SessionEnd removes the session", () => {
+  const { hook, one } = setup();
+  hook("UserPromptSubmit");
+  hook("SessionEnd");
+  assert.equal(one(), undefined);
+});
+
+const reg = (status: string, extra: Partial<RegistryEntry> = {}): RegistryEntry => ({
+  pid: 1, sessionId: "s1", cwd: "/work/api", name: "api-1", status, statusUpdatedAt: 900_000, ...extra,
+});
+
+test("without hooks, the registry and transcript give a best guess", () => {
+  const { store, one } = setup();
+  store.applyRegistry([{ reg: reg("busy"), tr: { title: "Retry backoff", lastText: "", tool: { id: "t", name: "Bash", input: { description: "Run tests" }, pending: true } } }]);
+  assert.equal(one()?.title, "Retry backoff");
+  assert.equal(one()?.detail, "Run tests");
+  store.applyRegistry([{ reg: reg("waiting"), tr: { title: "", lastText: "", tool: { id: "t", name: "AskUserQuestion", input: { questions: [{ question: "Ship it?" }] }, pending: true } } }]);
+  assert.equal(one()?.state, "question");
+  store.applyRegistry([{ reg: reg("idle"), tr: { title: "", lastText: "All 14 tests pass.", tool: undefined } }]);
+  assert.equal(one()?.state, "review");
+  assert.equal(one()?.detail, "All 14 tests pass.");
+  assert.equal(one()?.since, 900_000);
+});
+
+test("once hooks arrive, the registry no longer overrides the state", () => {
+  const { store, hook, one } = setup();
+  hook("PermissionRequest", { tool_name: "Bash", tool_input: { command: "make" } });
+  store.applyRegistry([{ reg: reg("busy"), tr: { title: "", lastText: "" } }]);
+  assert.equal(one()?.state, "permission");
+});
+
+test("a session that leaves the registry is dropped", () => {
+  const { store, one, tick } = setup();
+  store.applyRegistry([{ reg: reg("idle"), tr: { title: "", lastText: "" } }]);
+  assert.ok(one());
+  tick(20_000);
+  store.applyRegistry([]);
+  assert.equal(one(), undefined);
+});
+
+test("the view puts urgent first, then the longest wait", () => {
+  let now = 0;
+  const store = createStore(() => now);
+  store.applyHook({ hook_event_name: "Stop", session_id: "old-review", cwd: "/a" });
+  now = 10;
+  store.applyHook({ hook_event_name: "UserPromptSubmit", session_id: "worker", cwd: "/b" });
+  now = 20;
+  store.applyHook({ hook_event_name: "PermissionRequest", session_id: "asker", cwd: "/c", tool_name: "Bash", tool_input: {} });
+  assert.deepEqual(store.view().map((a) => a.id), ["asker", "old-review", "worker"]);
+});
+
+const pane = (workspaceTitle: string, surfaceTitle: string, description = "") => ({
+  window: "w", workspace: "ws", surface: "sf", tty: "ttys001", workspaceTitle, surfaceTitle, description,
+});
+
+test("a renamed cmux workspace names the session, with its description on hover", () => {
+  const { store, one } = setup();
+  store.applyRegistry([{ reg: reg("idle"), tr: { title: "Jfrog login setup", lastText: "" }, pane: pane("SEG-268: CIDR grid hides first seeded rule", "Jfrog login setup", "Stale blank row") }]);
+  assert.equal(one()?.title, "SEG-268: CIDR grid hides first seeded rule");
+  assert.equal(one()?.about, "Stale blank row");
+});
+
+test("a workspace that only mirrors the terminal title doesn't override the AI title", () => {
+  const { store, one } = setup();
+  store.applyRegistry([{ reg: reg("idle"), tr: { title: "Retry backoff", lastText: "" }, pane: pane("zsh", "zsh") }]);
+  assert.equal(one()?.title, "Retry backoff");
+  assert.equal(one()?.about, undefined);
+});

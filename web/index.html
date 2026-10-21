@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The AI Crowd</title>
+<link rel="icon" id="favicon" href="data:,">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=IBM+Plex+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #15171a;
+    --panel: #1d2024;
+    --panel-2: #24282d;
+    --line: #33383f;
+    --text: #e6e2d6;
+    --muted: #9a9789;
+    --urgent: #ff4d3d;
+    --review: #f2b233;
+    --quiet: #6f9a6a;
+    --phosphor: #7dff8a;
+    --pixel: "Press Start 2P", ui-monospace, monospace;
+    --mono: "IBM Plex Mono", ui-monospace, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--mono); }
+  button { font: inherit; color: inherit; cursor: pointer; }
+  header.top { display: flex; align-items: center; gap: 16px; padding: 14px 20px; border-bottom: 2px solid var(--line); flex-wrap: wrap; }
+  header.top h1 { font: 16px/1 var(--pixel); margin: 0; letter-spacing: 1px; }
+  header.top h1 span { color: var(--urgent); }
+  header.top .tag { color: var(--muted); font-size: 12px; }
+  header.top .spacer { flex: 1; }
+  .chips { display: flex; gap: 8px; }
+  .chip { padding: 3px 9px; border-radius: 3px; font-size: 12px; border: 1px solid var(--line); background: var(--panel); }
+  .chip b { font-weight: 600; }
+  .chip.urgent b { color: var(--urgent); } .chip.review b { color: var(--review); } .chip.quiet b { color: var(--quiet); }
+  .iconbtn { background: var(--panel-2); border: 1px solid var(--line); border-radius: 4px; padding: 5px 10px; }
+  .iconbtn:hover { border-color: var(--muted); }
+
+  .infobar { display: flex; gap: 12px; align-items: center; padding: 10px 20px; background: #2a2416; border-bottom: 1px solid #4d4020; color: #f3dfaa; font-size: 13px; flex-wrap: wrap; }
+  .infobar.hooks { background: #18242a; border-color: #23414d; color: #b7dbe8; }
+  .infobar .grow { flex: 1; min-width: 240px; }
+  .infobar button { background: transparent; border: 1px solid currentColor; border-radius: 4px; padding: 3px 10px; }
+  .infobar button.primary { background: #f2b233; color: #1b1606; border-color: #f2b233; font-weight: 600; }
+  .infobar .x { border: none; opacity: .7; }
+
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 3px; font-size: 12px; white-space: nowrap; }
+  .pill::before { content: ""; width: 7px; height: 7px; border-radius: 1px; background: currentColor; }
+  .pill.urgent { color: var(--urgent); background: #ff4d3d1c; }
+  .pill.review { color: var(--review); background: #f2b2331c; }
+  .pill.quiet { color: var(--quiet); background: #6f9a6a1c; }
+  .pill.urgent::before { animation: blink 1s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .2; } }
+  .src { font-size: 10px; color: var(--muted); border: 1px solid var(--line); padding: 0 4px; border-radius: 2px; text-transform: uppercase; }
+  .portrait { width: 36px; height: 36px; image-rendering: pixelated; background: #2c3b33; border-radius: 3px; flex: none; }
+  .dl { font: 600 10px/1 var(--mono); text-transform: uppercase; letter-spacing: .5px; padding: 2px 5px; border-radius: 2px; background: #ffffff14; color: var(--muted); margin-right: 4px; vertical-align: 1px; }
+  .dl.urgent { color: var(--urgent); background: #ff4d3d1c; } .dl.review { color: var(--review); background: #f2b2331c; }
+  .clamp { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .clamp3 { display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
+  .proj { display: block; font-size: 11px; color: var(--muted); }
+  .wait { font-variant-numeric: tabular-nums; color: var(--muted); white-space: nowrap; }
+  .wait.long { color: var(--text); }
+  .empty { color: var(--muted); padding: 16px; }
+
+  /* office canvas */
+  .office { width: 100%; display: block; image-rendering: pixelated; cursor: pointer; background: #222; }
+
+  /* office and list side by side */
+  .va { display: grid; grid-template-columns: minmax(0, 1.25fr) minmax(380px, 1fr); gap: 0; min-height: calc(100vh - 120px); }
+  .va .left { border-right: 2px solid var(--line); }
+  .va table { width: 100%; border-collapse: collapse; }
+  .va th { text-align: left; font: 9px/1 var(--pixel); color: var(--muted); padding: 14px 10px 8px; border-bottom: 1px solid var(--line); }
+  .va td { padding: 8px 10px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  .va tr.row { cursor: pointer; } .va tr.row:hover td { background: var(--panel); }
+  .va tr.tier td { font: 9px/1 var(--pixel); padding: 14px 10px 6px; color: var(--muted); border-bottom: none; }
+  .va tr.helper td { padding: 2px 10px 6px 56px; color: var(--muted); font-size: 12px; border-bottom: 1px dashed var(--line); }
+  .va .who { display: flex; gap: 10px; align-items: center; }
+  .va .who div b { display: block; font-weight: 600; }
+  .va .who div small { color: var(--muted); }
+  @media (max-width: 900px) { .va { grid-template-columns: 1fr; } .va .left { border-right: none; border-bottom: 2px solid var(--line); } }
+
+  /* settings dialog */
+  dialog { background: var(--panel); color: var(--text); border: 2px solid var(--line); border-radius: 8px; padding: 0; width: min(520px, 92vw); }
+  dialog::backdrop { background: #000a; }
+  dialog h2 { font: 12px/1 var(--pixel); margin: 0; padding: 16px 18px; border-bottom: 1px solid var(--line); }
+  dialog section { padding: 12px 18px; border-bottom: 1px solid var(--line); }
+  dialog h3 { font-size: 12px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
+  dialog label { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
+  dialog label.off { color: var(--muted); }
+  dialog .note { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
+  dialog footer { padding: 12px 18px; display: flex; justify-content: flex-end; }
+
+  /* toast */
+  .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: #000; border: 1px solid var(--phosphor); color: var(--phosphor); padding: 8px 14px; border-radius: 4px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; max-width: 90vw; }
+  .toast.show { opacity: 1; }
+  [hidden] { display: none !important; }
+  dialog code, .infobar code { background: #0004; padding: 1px 5px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<!-- Datastar wiring: the event stream, actions from office.js, and signal patches handed to it. -->
+<div id="stream" hidden data-init="@get('/events', {retry: 'always', retryMaxCount: 1000000, openWhenHidden: true})"></div>
+<div id="actions" hidden data-on:crowd-post="@post(evt.detail)"></div>
+<div hidden data-on-signal-patch="window.crowd && window.crowd.patched(patch)"></div>
+
+<header class="top">
+  <h1>THE <span>AI</span> CROWD</h1>
+  <span class="tag">Have you tried turning it off and on again?</span>
+  <span class="spacer"></span>
+  <div id="chips" class="chips"></div>
+  <button class="iconbtn" data-act="settings">Settings</button>
+</header>
+
+<div class="infobar" id="alerts-bar" hidden>
+  <span class="grow">Alerts are on: a ring and a macOS notification when an agent needs you. Your browser needs one click to allow them. You can change what alerts and how in Settings.</span>
+  <button class="primary" data-act="enable">Enable alerts</button>
+  <button data-act="settings">Settings</button>
+  <button class="x" data-act="dismiss-alerts" title="Dismiss">✕</button>
+</div>
+<div class="infobar hooks" id="hooks-bar" hidden>
+  <span class="grow">Without the plugin, sessions are read from ~/.claude/sessions and their transcripts, so a permission prompt vs. a question is a guess and API errors don't show. For exact states, run <code>/plugin marketplace add Farmer-Pete/the-AI-crowd</code> then <code>/plugin install the-ai-crowd@the-ai-crowd</code> in Claude Code.</span>
+  <button class="x" data-act="dismiss-hooks" title="Dismiss">✕</button>
+</div>
+
+<div class="va">
+  <div class="left" id="office"></div>
+  <div class="right"><div id="list"></div></div>
+</div>
+
+<dialog id="settings">
+  <h2>Settings</h2>
+  <section>
+    <label><input type="checkbox" data-set="muted"> Mute all alerts (same as the ALERTS switch on the office wall)</label>
+  </section>
+  <section>
+    <h3>Urgent (permission, question, error)</h3>
+    <label><input type="checkbox" data-set="urgentSound"> Play a sound</label>
+    <label><input type="checkbox" data-set="urgentNotify"> Show a macOS notification</label>
+    <label><input type="checkbox" data-set="tabCount"> Count in the tab title and icon</label>
+  </section>
+  <section>
+    <h3>Review (finished a turn)</h3>
+    <label><input type="checkbox" data-set="reviewSound"> Play a sound</label>
+    <label><input type="checkbox" data-set="reviewNotify"> Show a macOS notification</label>
+  </section>
+  <section>
+    <h3>Sound</h3>
+    <label><select data-set="sound"><option value="phone">Red phone ring</option><option value="beep">Short beep</option></select>
+      <button type="button" class="iconbtn" data-act="test-sound">Test</button></label>
+  </section>
+  <section>
+    <h3>Office</h3>
+    <label><input type="checkbox" data-set="popBubbles"> Chatter: pop up a speech bubble when an agent starts something new or finishes (same as the CHATTER switch on the office wall)</label>
+    <label><input type="checkbox" data-set="showDemo"> Show demo agents</label>
+  </section>
+  <section>
+    <p class="note">Saved to ~/.config/the-ai-crowd/config.json, which you can also edit by hand.</p>
+  </section>
+  <footer><button class="iconbtn" data-act="close-settings">Done</button></footer>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script type="module" src="/office.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/gh/starfederation/datastar@v1.0.4/bundles/datastar.js" integrity="sha384-twbOvafhSBQ0rJDNPzJdUw6DRvthVgAVfSIG1BQVmCiNO7Qh2zeVn7T5qstgjJ9q" crossorigin="anonymous"></script>
+</body>
+</html>
