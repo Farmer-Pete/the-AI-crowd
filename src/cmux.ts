@@ -18,7 +18,7 @@ type Workspace = { id: string; title?: string; description?: string | null; pane
 type Tree = { windows?: { id: string; workspaces?: Workspace[] }[] };
 
 async function cmux(args: string[]) {
-  return (await run("cmux", args, { timeout: 3000 })).stdout;
+  return (await run("cmux", args, { timeout: 3000, env: { ...process.env, CMUX_QUIET: "1" } })).stdout;
 }
 
 // Every terminal surface in cmux. Empty when cmux isn't installed or reachable.
@@ -60,6 +60,17 @@ export async function ttysOf(pids: number[]): Promise<Map<number, string>> {
 export function matchPane(panes: PaneInfo[], tty?: string, surface?: string): PaneInfo | undefined {
   if (surface) return panes.find((p) => p.surface.toLowerCase() === surface.toLowerCase());
   return tty ? panes.find((p) => p.tty === tty) : undefined;
+}
+
+// A browser pane in the cmux Dock keeps keyboard focus through focus-panel. Hiding and re-showing
+// the right sidebar hands focus back to the main area. Only when the Dock is what the sidebar shows.
+export async function releaseDockFocus() {
+  try {
+    const mode = JSON.parse(await cmux(["right-sidebar", "mode"]));
+    if (!mode.visible || mode.mode !== "dock") return;
+    await cmux(["right-sidebar", "hide"]);
+    await cmux(["right-sidebar", "show"]);
+  } catch { /* cmux unreachable; the jump still runs */ }
 }
 
 // Raises the window, shows the workspace, then focuses the session's tab.

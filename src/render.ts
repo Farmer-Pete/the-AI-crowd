@@ -24,7 +24,8 @@ export function ago(since: number, now: number): string {
   return `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
-const jumpAttr = (id: string) => (SAFE_ID.test(id) ? ` data-on:click="@post('/api/jump/${id}')"` : "");
+// The page reads data-id to jump on a click and to mark the row picked with the keyboard.
+const jumpAttr = (id: string) => (SAFE_ID.test(id) ? ` data-id="${id}"` : "");
 
 function row(a: ViewAgent, now: number): string {
   const label = DETAIL_LABEL[a.state];

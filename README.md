@@ -44,6 +44,15 @@ A finished session stays in Review until you click it or send it a prompt. It fa
 
 Clicking a session focuses its cmux pane. Start The AI Crowd from a cmux terminal so it can reach cmux.
 
+## Keep it in the cmux Dock
+
+The page fits the cmux Dock, the right sidebar: `cmux new-pane --type browser --placement dock --url http://localhost:4747`. Below 520 px wide it drops the header items, the info bars, and the office wall, and stacks one desk per row.
+
+- The Dock shows a hint with your own cmux keys for showing and focusing the sidebar. It reads them from `~/.config/cmux/cmux.json`, then cmux Settings, then cmux's defaults (⌥⌘B and ⇧⌘E).
+- ↓ walks the desks, then the list rows, and stops at the last row. ↑ walks back and stops at the first desk.
+- Enter jumps to the picked session. Esc clears the pick.
+- A jump from the Dock hands keyboard focus back to the main pane.
+
 ## Alerts and chatter
 
 By default, an urgent session plays a ring and shows a macOS notification. Browsers need one click before they allow either, so the page shows an "Enable alerts" bar until you do. The ALERTS switch on the office wall mutes everything. The CHATTER switch turns off the speech bubbles that pop up when a session starts something new or finishes. Urgent asks still show. The extinguisher jumps to the session that has waited longest.

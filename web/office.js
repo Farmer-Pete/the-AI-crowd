@@ -15,6 +15,7 @@ const pops = new Map();     // id -> when its line last changed, for pop-up bubb
 const POP_MS = 6000;
 const ghosts = new Map();   // live agents that vanished: id -> {agent, until}
 const prevTier = new Map();
+let picked;                 // the desk or list row picked with the arrow keys: { kind: "desk" | "row", id }
 
 // The detail line means different things by state, so it always carries its label.
 const DETAIL_LABEL = { working: "Now", permission: "Asks", question: "Asks", waiting: "Asks", error: "Error", review: "Result", idle: "Last", ended: "" };
@@ -23,6 +24,11 @@ const DETAIL_LABEL = { working: "Now", permission: "Asks", question: "Asks", wai
 function post(path) {
   document.getElementById("actions").dispatchEvent(new CustomEvent("crowd-post", { detail: path }));
 }
+
+// cmux's browser panes (the Dock among them) are WebKit views that expose window.webkit.messageHandlers.
+// A jump from one tells the server to release the Dock's keyboard focus.
+const IN_CMUX = !!window.webkit?.messageHandlers;
+const jump = (id) => post(`/api/jump/${encodeURIComponent(id)}${IN_CMUX ? "?from=cmux" : ""}`);
 
 // ============================================================================
 // Characters: seeded from the session id, drawn in code at 32x32-ish
@@ -136,9 +142,13 @@ function bubble(c, x, y, chars, col) {
 // ============================================================================
 
 const CELL_W = 56, CELL_H = 56, WALL_H = 30, PAD = 6;
+// Below this width (the cmux Dock), the office drops its wall and shows only desks. Matches the CSS breakpoint.
+const NARROW_PX = 520;
 
-function deskSlots(list, cols) {
-  return list.map((a, i) => ({ a, x: PAD + (i % cols) * CELL_W, y: WALL_H + 6 + Math.floor(i / cols) * CELL_H }));
+// Desks flow left to right, as many per row as fit, and the rows sit centred in the room.
+function deskSlots(list, cols, w, top) {
+  const left = Math.max(PAD, Math.floor((w - cols * CELL_W) / 2));
+  return list.map((a, i) => ({ a, x: left + (i % cols) * CELL_W, y: top + 6 + Math.floor(i / cols) * CELL_H }));
 }
 
 // Desk order is stable: first seen, first seated.
@@ -150,7 +160,35 @@ function seated(list) {
   return seatOrder.map((id) => byId.get(id));
 }
 
-const ALERTS_X = 64, CHATTER_X = 112;
+// Lays out the wall props left to right in logical pixels, for any office width.
+// The switches matter most: their labels shrink, then go, before a switch does.
+// Then the sign, then the clock. The extinguisher always keeps the right edge.
+function wallLayout(c, w, scale) {
+  c.font = `600 ${scale * 3.4}px "IBM Plex Mono", monospace`;
+  const labelW = (t) => (t ? c.measureText(t).width / scale + 2 : 0);
+  const room = w - 26;
+  const withChatter = scale >= 2;
+  const options = [
+    [settings.muted ? "ALERTS OFF" : "ALERTS ON", settings.popBubbles ? "CHATTER ON" : "CHATTER OFF"],
+    ["ALERTS", "CHATTER"],
+    ["", ""],
+  ];
+  for (const [i, [a, ch]] of options.entries()) {
+    const aw = 16 + labelW(a);
+    const cw = withChatter ? 16 + labelW(ch) : 0;
+    if (6 + aw + cw > room && i < options.length - 1) continue;
+    const sign = 60 + aw + cw <= room;
+    const x = sign ? 60 : 6;
+    const end = x + aw + cw;
+    return {
+      sign,
+      alerts: { x, label: a },
+      chatter: withChatter ? { x: x + aw, label: ch } : null,
+      clock: end + 4 <= w - 51 ? w - 42 : null,
+    };
+  }
+}
+
 function drawSwitch(c, x, on) {
   px(c, x, 3, 14, 21, "#d9cfb2"); px(c, x + 1, 4, 12, 19, "#e8e1c8");
   px(c, x + 4, 6, 6, 13, "#3a3a3a");
@@ -158,19 +196,20 @@ function drawSwitch(c, x, on) {
   else { px(c, x + 4, 13, 6, 6, "#c0392b"); px(c, x + 5, 17, 4, 4, "#8f2a1f"); }
 }
 
-// chatterSwitch: only offices big enough to show speech bubbles get the chatter switch.
-function drawRoom(c, w, h, t, chatterSwitch) {
+// wall is null in a narrow office: carpet only.
+function drawRoom(c, w, h, t, wall) {
   // carpet
-  for (let y = WALL_H; y < h; y += 8) for (let x = 0; x < w; x += 8) px(c, x, y, 8, 8, ((x + y) / 8) % 2 ? "#3b3a33" : "#36352f");
+  for (let y = wall ? WALL_H : 0; y < h; y += 8) for (let x = 0; x < w; x += 8) px(c, x, y, 8, 8, ((x + y) / 8) % 2 ? "#3b3a33" : "#36352f");
+  if (!wall) return;
   // wall with bricks
   px(c, 0, 0, w, WALL_H, "#4b5145");
   for (let y = 0; y < WALL_H - 4; y += 5) for (let x = (y / 5) % 2 ? -6 : 0; x < w; x += 12) px(c, x, y, 11, 4, "#545a4c");
   px(c, 0, WALL_H - 3, w, 3, "#2c2f29");
-  // a sign, a poster, the fire extinguisher, a window to the street
-  px(c, 8, 6, 46, 12, "#1d1f1b");
+  // the sign; its text is drawn in the label pass
+  if (wall.sign) px(c, 8, 6, 46, 12, "#1d1f1b");
   // wall switches: lever up means on, down means off
-  drawSwitch(c, ALERTS_X, !settings.muted);
-  if (chatterSwitch) drawSwitch(c, CHATTER_X, settings.popBubbles);
+  drawSwitch(c, wall.alerts.x, !settings.muted);
+  if (wall.chatter) drawSwitch(c, wall.chatter.x, settings.popBubbles);
   // fire extinguisher on a wall bracket: body, shoulder, valve, handle, hose, label band
   const ex = w - 20;
   px(c, ex - 1, 12, 9, 2, "#6b6b6b");
@@ -179,8 +218,8 @@ function drawRoom(c, w, h, t, chatterSwitch) {
   px(c, ex + 2, 5, 3, 3, "#222"); px(c, ex + 1, 4, 6, 1, "#444"); px(c, ex + 5, 3, 3, 1, "#444");
   px(c, ex + 7, 6, 1, 1, "#222"); px(c, ex + 8, 7, 1, 8, "#222"); px(c, ex + 7, 15, 1, 2, "#222");
   // wall clock showing the real local time
-  if (w > 220) {
-    const ox = w - 42, oy = 13, now = new Date();
+  if (wall.clock !== null) {
+    const ox = wall.clock, oy = 13, now = new Date();
     c.fillStyle = "#2a2a2a"; c.beginPath(); c.arc(ox, oy, 9, 0, 7); c.fill();
     c.fillStyle = "#f3eedc"; c.beginPath(); c.arc(ox, oy, 7.5, 0, 7); c.fill();
     for (let i = 0; i < 12; i += 3) { const a = (i / 12) * Math.PI * 2; px(c, Math.round(ox + Math.sin(a) * 6) - 0.5, Math.round(oy - Math.cos(a) * 6) - 0.5, 1, 1, "#2a2a2a"); }
@@ -191,13 +230,24 @@ function drawRoom(c, w, h, t, chatterSwitch) {
   }
 }
 
-function drawDesk(c, s, t) {
+// rowWidth > 0 means a one-column office: a colored divider under each desk replaces the outline.
+function drawDesk(c, s, t, rowWidth = 0) {
   const { a, x, y } = s;
   const tier = a.tier;
   const pulse = 0.35 + 0.35 * Math.sin(t * 6);
-  // attention outline
-  if (tier === "urgent") { c.strokeStyle = `rgba(255,77,61,${pulse + 0.2})`; c.lineWidth = 1.5; c.strokeRect(x + 1, y - 8, CELL_W - 4, 54); }
-  if (tier === "review") { c.strokeStyle = "rgba(242,178,51,.55)"; c.lineWidth = 1; c.strokeRect(x + 1, y - 8, CELL_W - 4, 54); }
+  // the session picked with the keyboard or a click: a green floor and outline
+  if (picked?.kind === "desk" && picked.id === a.id) {
+    c.fillStyle = "rgba(125,255,138,.10)"; c.fillRect(x + 1, y - 8, CELL_W - 4, 54);
+    c.strokeStyle = "#7dff8a"; c.lineWidth = 1; c.strokeRect(x - 0.5, y - 9.5, CELL_W - 1, 57);
+  }
+  // attention: an outline around the desk, or in one column a divider under it
+  if (rowWidth) {
+    const color = tier === "urgent" ? `rgba(255,77,61,${pulse + 0.3})` : tier === "review" ? "rgba(242,178,51,.8)" : "rgba(120,120,110,.35)";
+    px(c, 0, y + 45, rowWidth, tier === "quiet" ? 0.7 : 1.5, color);
+  } else {
+    if (tier === "urgent") { c.strokeStyle = `rgba(255,77,61,${pulse + 0.2})`; c.lineWidth = 1.5; c.strokeRect(x + 1, y - 8, CELL_W - 4, 54); }
+    if (tier === "review") { c.strokeStyle = "rgba(242,178,51,.55)"; c.lineWidth = 1; c.strokeRect(x + 1, y - 8, CELL_W - 4, 54); }
+  }
   // chair
   px(c, x + 12, y + 4, 16, 18, "#2a2d35");
   if (a.state !== "ended" && a.state !== "idle") drawPerson(c, x + 12, y + 2, lookFor(a.id), a.state === "waiting" ? "permission" : a.state === "seen" ? "review" : a.state, t);
@@ -242,6 +292,17 @@ function drawDesk(c, s, t) {
     px(c, bx + 2, by + 1, 3, 3, "#c68a5c"); px(c, bx + 1, by + 4, 5, 4, "#2c7fb8");
   }
 }
+// The longest start of `text` that fits in maxPx with the current font, with "…" when cut.
+function fitText(c, text, maxPx) {
+  if (c.measureText(text).width <= maxPx) return text;
+  let lo = 0, hi = text.length;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (c.measureText(text.slice(0, mid) + "…").width <= maxPx) lo = mid; else hi = mid - 1;
+  }
+  return text.slice(0, lo) + "…";
+}
+
 function wrap(c, text, maxW, maxLines = 3) {
   const lines = [];
   let line = "";
@@ -260,14 +321,15 @@ function speech(c, s, scale, lw, alpha = 1) {
   const a = s.a;
   c.globalAlpha = alpha;
   const urgent = a.tier === "urgent";
-  const label = DETAIL_LABEL[a.state];
+  // A working agent just says what it's doing. Asks, errors, and results keep their label.
+  const label = a.state === "working" ? "" : DETAIL_LABEL[a.state];
   c.font = '12px "IBM Plex Mono", monospace';
   const lines = wrap(c, `${label ? label.toUpperCase() + ": " : ""}${a.detail}`, CELL_W * scale - 30, 4);
   const w = Math.max(...lines.map((l) => c.measureText(l).width)) + 18;
   const h = lines.length * 15 + 11;
   const tx = (s.x + CELL_W / 2) * scale;
   const x = tx - w / 2;
-  const y = (s.y - 11) * scale - h;
+  const y = Math.max(2, (s.y - 11) * scale - h); // keeps the top row's bubbles on the canvas
   c.fillStyle = urgent ? "#fdfbf3" : "#0d1a10";
   c.strokeStyle = urgent ? "#ff4d3d" : "#7dff8a";
   c.lineWidth = 2;
@@ -280,9 +342,9 @@ function speech(c, s, scale, lw, alpha = 1) {
 }
 
 // Hit areas on the office wall, in logical pixels.
-const onSwitch = (lx, ly) => lx >= ALERTS_X && lx < ALERTS_X + 14 && ly >= 3 && ly < 24;
-const onChatter = (lx, ly, scale) => scale >= 2 && lx >= CHATTER_X && lx < CHATTER_X + 14 && ly >= 3 && ly < 24;
-const onExtinguisher = (lx, ly, w) => lx >= w - 21 && lx < w - 10 && ly >= 3 && ly < 25;
+const onSwitch = (wall, lx, ly) => !!wall && lx >= wall.alerts.x && lx < wall.alerts.x + 14 && ly >= 3 && ly < 24;
+const onChatter = (wall, lx, ly) => !!wall?.chatter && lx >= wall.chatter.x && lx < wall.chatter.x + 14 && ly >= 3 && ly < 24;
+const onExtinguisher = (wall, lx, ly, w) => !!wall && lx >= w - 21 && lx < w - 10 && ly >= 3 && ly < 25;
 
 const badgeHit = (s, lx, ly) => s.a.helpers.length && lx >= s.x + 36 && lx < s.x + 52 && ly >= s.y - 9 && ly < s.y;
 
@@ -296,26 +358,27 @@ function mountOffice(host, scale) {
   canvas.addEventListener("click", (e) => {
     const r = canvas.getBoundingClientRect();
     const lx = (e.clientX - r.left) / scale, ly = (e.clientY - r.top) / scale;
-    if (onSwitch(lx, ly)) return post("/api/settings/muted/toggle");
-    if (onChatter(lx, ly, scale)) return post("/api/settings/popBubbles/toggle");
-    if (onExtinguisher(lx, ly, lw)) return post("/api/fire");
+    if (onSwitch(wall, lx, ly)) return post("/api/settings/muted/toggle");
+    if (onChatter(wall, lx, ly)) return post("/api/settings/popBubbles/toggle");
+    if (onExtinguisher(wall, lx, ly, lw)) return post(`/api/fire${IN_CMUX ? "?from=cmux" : ""}`);
     const hit = slots.find((s) => lx >= s.x && lx < s.x + CELL_W && ly >= s.y - 10 && ly < s.y + CELL_H - 10);
-    if (hit) post(`/api/jump/${encodeURIComponent(hit.a.id)}`);
+    if (hit) { select(undefined); jump(hit.a.id); }
   });
   canvas.addEventListener("mousemove", (e) => {
     const r = canvas.getBoundingClientRect();
     const lx = (e.clientX - r.left) / scale, ly = (e.clientY - r.top) / scale;
     const hit = slots.find((s) => badgeHit(s, lx, ly));
     hoverId = slots.find((s) => lx >= s.x && lx < s.x + CELL_W && ly >= s.y - 10 && ly < s.y + CELL_H - 10)?.a.id;
-    canvas.title = onSwitch(lx, ly) ? (settings.muted ? "Turn alerts back on" : "Mute all alerts")
-      : onChatter(lx, ly, scale) ? (settings.popBubbles ? "Turn off chatter: only urgent asks pop up" : "Turn chatter back on")
-      : onExtinguisher(lx, ly, lw) ? "Put out the oldest fire"
+    canvas.title = onSwitch(wall, lx, ly) ? (settings.muted ? "Turn alerts back on" : "Mute all alerts")
+      : onChatter(wall, lx, ly) ? (settings.popBubbles ? "Turn off chatter: only urgent asks pop up" : "Turn chatter back on")
+      : onExtinguisher(wall, lx, ly, lw) ? "Put out the oldest fire"
       : hit ? `Helpers: ${hit.a.helpers.map((h) => h.label).join(", ")}` : "";
   });
   canvas.addEventListener("mouseleave", () => { hoverId = undefined; });
   let alive = true;
   let lw = 0;
   let hoverId;
+  let wall;
   function frame(ms) {
     if (!alive) return;
     const t = ms / 1000;
@@ -324,30 +387,38 @@ function mountOffice(host, scale) {
     const cols = Math.max(1, Math.floor((lw - PAD * 2) / CELL_W));
     const list = seated(agents);
     const rows = Math.max(2, Math.ceil(list.length / cols));
-    const lh = WALL_H + 8 + rows * CELL_H;
+    const top = wpx < NARROW_PX ? 8 : WALL_H;
+    const lh = top + 8 + rows * CELL_H;
     if (canvas.width !== lw * scale || canvas.height !== lh * scale) { canvas.width = lw * scale; canvas.height = lh * scale; }
     c.setTransform(scale, 0, 0, scale, 0, 0);
     c.imageSmoothingEnabled = false;
-    drawRoom(c, lw, lh, t, scale >= 2);
-    slots = deskSlots(list, cols);
-    slots.forEach((s) => drawDesk(c, s, t));
+    wall = top === WALL_H ? wallLayout(c, lw, scale) : null;
+    drawRoom(c, lw, lh, t, wall);
+    slots = deskSlots(list, cols, lw, top);
+    const single = cols === 1;
+    slots.forEach((s) => drawDesk(c, s, t, single ? lw : 0));
     // name labels in real pixels so they stay sharp
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.font = `${Math.max(8, scale * 3.6)}px "IBM Plex Mono", monospace`;
     c.textAlign = "center";
+    // In one column a title may use the whole row, centered on it; otherwise it stays under its desk.
     for (const s of slots) {
       const max = scale < 2 ? 11 : 18;
-      const name = s.a.title.length > max ? s.a.title.slice(0, max - 1) + "…" : s.a.title;
+      const name = single ? fitText(c, s.a.title, lw * scale - 16) : s.a.title.length > max ? s.a.title.slice(0, max - 1) + "…" : s.a.title;
       const label = s.a.state === "ended" ? "(left)" : name;
+      const lx = single ? (lw * scale) / 2 : (s.x + CELL_W / 2) * scale;
       const ly = (s.y + 43) * scale;
-      c.fillStyle = "#000a"; c.fillText(label, (s.x + CELL_W / 2) * scale + 1, ly + 1);
+      c.fillStyle = "#000a"; c.fillText(label, lx + 1, ly + 1);
       c.fillStyle = s.a.tier === "urgent" ? "#ff8a7d" : s.a.tier === "review" ? "#f6cd74" : "#d9d4c4";
-      c.fillText(label, (s.x + CELL_W / 2) * scale, ly);
+      c.fillText(label, lx, ly);
     }
     c.textAlign = "left";
-    c.font = `${scale * 4}px "Press Start 2P", monospace`; c.fillStyle = "#e7d27a"; c.fillText("AI DEPT", 11 * scale, 15 * scale);
-    c.font = `600 ${scale * 3.4}px "IBM Plex Mono", monospace`; c.fillStyle = settings.muted ? "#ff8a7d" : "#e7d27a"; c.fillText(settings.muted ? "ALERTS OFF" : "ALERTS ON", (ALERTS_X + 16) * scale, 15 * scale);
-    if (scale >= 2) { c.fillStyle = settings.popBubbles ? "#e7d27a" : "#ff8a7d"; c.fillText(settings.popBubbles ? "CHATTER ON" : "CHATTER OFF", (CHATTER_X + 16) * scale, 15 * scale); }
+    if (wall) {
+      if (wall.sign) { c.font = `${scale * 4}px "Press Start 2P", monospace`; c.fillStyle = "#e7d27a"; c.fillText("AI DEPT", 11 * scale, 15 * scale); }
+      c.font = `600 ${scale * 3.4}px "IBM Plex Mono", monospace`;
+      c.fillStyle = settings.muted ? "#ff8a7d" : "#e7d27a"; c.fillText(wall.alerts.label, (wall.alerts.x + 16) * scale, 15 * scale);
+      if (wall.chatter) { c.fillStyle = settings.popBubbles ? "#e7d27a" : "#ff8a7d"; c.fillText(wall.chatter.label, (wall.chatter.x + 16) * scale, 15 * scale); }
+    }
     c.font = `600 ${scale * 4}px "IBM Plex Mono", monospace`; c.fillStyle = "#222";
     for (const s of slots) if (s.a.helpers.length) c.fillText(`×${s.a.helpers.length}`, (s.x + 43) * scale, (s.y - 2) * scale);
     // Urgent desks always say what they're asking. Hovering any desk shows its detail line.
@@ -367,7 +438,17 @@ function mountOffice(host, scale) {
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
-  return { destroy() { alive = false; } };
+  return {
+    destroy() { alive = false; },
+    // Where a desk sits in the viewport, in CSS pixels, so the page can scroll it into view.
+    deskBox(id) {
+      const s = slots.find((x) => x.a.id === id);
+      if (!s) return undefined;
+      const r = canvas.getBoundingClientRect();
+      const k = (r.width / canvas.width) * scale;
+      return { top: r.top + (s.y - 10) * k, bottom: r.top + (s.y + 47) * k, firstRow: s.y === slots[0].y };
+    },
+  };
 }
 
 const portraits = new Map();
@@ -408,6 +489,24 @@ function update(state) {
   alertOnChanges();
   syncSettingsForm();
   showBars();
+  showKeysHint(state.shortcuts);
+}
+
+// The Dock hint: the user's own cmux keys for the right sidebar, then this page's keys.
+// A cmux shortcut the user unbound is left out.
+let lastHint = "";
+function showKeysHint(keys) {
+  const items = [[keys?.toggle, "show/hide"], [keys?.focus, "focus"], ["↑↓", "pick"], ["⏎", "jump"]].filter(([k]) => k);
+  const signature = JSON.stringify(items);
+  if (signature === lastHint) return;
+  lastHint = signature;
+  document.getElementById("keys-hint").replaceChildren(...items.map(([k, what]) => {
+    const item = document.createElement("span");
+    const kbd = document.createElement("kbd");
+    kbd.textContent = k;
+    item.append(kbd, what);
+    return item;
+  }));
 }
 
 let toastTimer;
@@ -503,17 +602,69 @@ document.addEventListener("click", async (e) => {
   }
 });
 
-// The server renders <img data-portrait="id">; the browser draws the face. A MutationObserver
-// fills each one before paint, including after Datastar morphs the list.
-function fillPortraits() {
+// The server renders <img data-portrait="id">; the browser draws the face. Datastar morphs the
+// list every second, so a MutationObserver redraws faces and re-marks the picked row before paint.
+function decorateList() {
   document.querySelectorAll("img[data-portrait]").forEach((im) => {
     const url = portrait({ id: im.dataset.portrait });
     if (im.getAttribute("src") !== url) im.src = url;
   });
+  document.querySelectorAll("tr.row").forEach((r) => {
+    const on = picked?.kind === "row" && r.dataset.id === picked.id;
+    if (r.classList.contains("selected") !== on) r.classList.toggle("selected", on);
+  });
 }
-new MutationObserver(fillPortraits).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "data-portrait"] });
+new MutationObserver(decorateList).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["src", "data-portrait", "class"] });
 
-mountOffice(document.getElementById("office"), 3);
+// Keyboard: ↓ walks the desks top to bottom, then the list rows, and stops at the last row.
+// ↑ walks back and stops at the first desk. Enter jumps to the picked session, Esc clears.
+// In the cmux Dock, ⌘⇧E gives this page keyboard focus.
+function pickables() {
+  const desks = seated(agents).filter((a) => a.state !== "ended").map((a) => ({ kind: "desk", id: a.id }));
+  const rows = [...document.querySelectorAll("tr.row[data-id]")].map((r) => ({ kind: "row", id: r.dataset.id }));
+  return [...desks, ...rows];
+}
+
+function select(item) {
+  picked = item;
+  decorateList();
+  if (item?.kind === "row") {
+    document.querySelector(`tr.row[data-id="${CSS.escape(item.id)}"]`)?.scrollIntoView({ block: "nearest" });
+    return;
+  }
+  const box = item && office.deskBox(item.id);
+  if (!box) return;
+  if (box.firstRow) scrollTo({ top: 0 }); // the top row brings the header back too
+  else if (box.top < 0) scrollBy({ top: box.top - 8 });
+  else if (box.bottom > innerHeight) scrollBy({ top: box.bottom - innerHeight + 8 });
+}
+
+addEventListener("keydown", (e) => {
+  if (dlg.open || e.metaKey || e.ctrlKey || e.altKey || e.target.closest?.("input, select, textarea, [contenteditable]")) return;
+  const items = pickables();
+  const i = items.findIndex((it) => it.kind === picked?.kind && it.id === picked?.id);
+  if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
+    e.preventDefault();
+    // Nothing picked yet, or the pick has gone: start at the first desk.
+    const next = i < 0 ? 0 : Math.min(items.length - 1, Math.max(0, i + (e.key === "ArrowDown" ? 1 : -1)));
+    select(items[next]);
+  } else if (e.key === "Enter" && i >= 0) {
+    e.preventDefault();
+    jump(picked.id);
+    select(undefined);
+  } else if (e.key === "Escape" && picked) {
+    select(undefined);
+  }
+});
+// A click on a list row jumps to that session and ends any keyboard pick.
+document.addEventListener("click", (e) => {
+  const row = e.target.closest?.("tr.row[data-id]");
+  if (!row) return;
+  select(undefined);
+  jump(row.dataset.id);
+});
+
+const office = mountOffice(document.getElementById("office"), 3);
 
 window.crowd = {
   patched(patch) {

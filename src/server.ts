@@ -7,8 +7,9 @@ import { createServer, type IncomingMessage, type ServerResponse } from "node:ht
 import { readFile } from "node:fs/promises";
 import { CONFIG_PATH, applySetting, loadSettings, saveSettings } from "./config.ts";
 import { demoAgents } from "./demo.ts";
-import { focus, matchPane, readPanes, ttysOf } from "./cmux.ts";
+import { focus, matchPane, readPanes, releaseDockFocus, ttysOf } from "./cmux.ts";
 import { readRegistry } from "./registry.ts";
+import { readShortcuts, type Shortcuts } from "./shortcuts.ts";
 import { renderChips, renderList } from "./render.ts";
 import { createStore, type HookEvent } from "./store.ts";
 import { readTranscript, transcriptPath } from "./transcript.ts";
@@ -34,6 +35,8 @@ const CSP = [
 const settings = loadSettings();
 const store = createStore();
 const clients = new Set<ServerResponse>();
+// The user's cmux keys for the right sidebar, shown in the Dock hint.
+let shortcuts: Shortcuts = { toggle: null, focus: null };
 
 // ---- sources ----------------------------------------------------------------
 
@@ -62,7 +65,7 @@ function frame(): string {
   const now = Date.now();
   const view = currentView();
   // The page's office canvas reads _state; underscore signals are never sent back to the server.
-  const state = { now, agents: view, settings, hooks: store.hooksSeen() };
+  const state = { now, agents: view, settings, hooks: store.hooksSeen(), shortcuts };
   return patchElements(renderChips(view, settings)) + patchElements(renderList(view, now)) + patchSignals({ _state: JSON.stringify(state) });
 }
 
@@ -74,7 +77,8 @@ function broadcast() {
 
 // ---- actions ------------------------------------------------------------------
 
-async function jump(id: string): Promise<string> {
+// fromCmux: the click or Enter came from a page inside cmux, such as the Dock, which keeps focus unless released.
+async function jump(id: string, fromCmux = false): Promise<string> {
   const a = currentView().find((x) => x.id === id);
   if (!a) return "That agent has gone home.";
   store.markSeen(a);
@@ -82,6 +86,7 @@ async function jump(id: string): Promise<string> {
   const target = store.where(id)?.target;
   if (!target) return `Couldn't find a cmux pane for ${a.title}. Is it running in cmux?`;
   try {
+    if (fromCmux) await releaseDockFocus();
     await focus(target);
     return `Jumped to ${a.title}.`;
   } catch {
@@ -89,10 +94,10 @@ async function jump(id: string): Promise<string> {
   }
 }
 
-async function fire(): Promise<string> {
+async function fire(fromCmux = false): Promise<string> {
   const oldest = currentView().find((a) => a.tier === "urgent");
   if (!oldest) return "No fires. Carry on.";
-  return `Putting out the oldest fire. ${await jump(oldest.id)}`;
+  return `Putting out the oldest fire. ${await jump(oldest.id, fromCmux)}`;
 }
 
 async function changeSetting(key: string, value: string): Promise<string> {
@@ -161,8 +166,9 @@ createServer(async (req, res) => {
       await readBody(req); // Datastar sends the page's signals; nothing here needs them
       const [, , action, a, b] = path.split("/").map(decodeURIComponent);
       let text = "";
-      if (action === "jump" && a) text = await jump(a);
-      else if (action === "fire") text = await fire();
+      const fromCmux = url.searchParams.get("from") === "cmux";
+      if (action === "jump" && a) text = await jump(a, fromCmux);
+      else if (action === "fire") text = await fire(fromCmux);
       else if (action === "settings" && a && b) text = await changeSetting(a, b);
       else { res.writeHead(404).end(); return; }
       sendToast(res, text);
@@ -180,6 +186,9 @@ createServer(async (req, res) => {
   console.log(`Settings: ${CONFIG_PATH}`);
 });
 
+const refreshShortcuts = async () => { shortcuts = await readShortcuts(); };
+refreshShortcuts();
+setInterval(refreshShortcuts, 30_000);
 pollRegistry();
 setInterval(pollRegistry, 2000);
 setInterval(broadcast, 1000);

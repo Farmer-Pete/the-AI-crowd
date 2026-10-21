@@ -20,9 +20,10 @@ test("transcript text can't inject markup or Datastar attributes", () => {
   assert.ok(html.includes("&lt;script&gt;"));
 });
 
-test("rows jump only for safe ids", () => {
-  assert.ok(renderList([agent()], 0).includes(`data-on:click="@post('/api/jump/s1')"`));
-  assert.ok(!renderList([agent({ id: "x');alert(1);('" })], 0).includes("data-on:click"));
+test("rows carry their id only when it is safe", () => {
+  assert.ok(renderList([agent()], 0).includes(`data-id="s1"`));
+  assert.ok(!renderList([agent({ id: "x');alert(1);('" })], 0).includes("data-id"));
+  assert.ok(!renderList([agent()], 0).includes("data-on:"));
 });
 
 test("the list stays on one line per SSE data field", () => {
