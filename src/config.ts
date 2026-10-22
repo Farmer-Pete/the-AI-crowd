@@ -10,10 +10,8 @@ export const CONFIG_PATH = join(process.env.XDG_CONFIG_HOME || join(homedir(), "
 
 export const DEFAULTS: Settings = {
   urgentSound: true,
-  urgentNotify: true,
   tabCount: true,
   reviewSound: false,
-  reviewNotify: true,
   sound: "phone",
   muted: false,
   popBubbles: true,

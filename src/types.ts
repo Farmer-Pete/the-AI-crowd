@@ -29,10 +29,8 @@ export type ViewAgent = Agent & { tier: Tier; label: string };
 
 export type Settings = {
   urgentSound: boolean;
-  urgentNotify: boolean;
   tabCount: boolean;
   reviewSound: boolean;
-  reviewNotify: boolean;
   sound: "phone" | "beep";
   muted: boolean;
   popBubbles: boolean;

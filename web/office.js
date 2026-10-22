@@ -6,10 +6,9 @@
 // State from the server
 // ============================================================================
 
-let settings = { muted: false, popBubbles: true, sound: "phone", urgentSound: true, urgentNotify: true, reviewSound: false, reviewNotify: true, tabCount: true, hooksDismissed: false };
+let settings = { muted: false, popBubbles: true, sound: "phone", urgentSound: true, reviewSound: false, tabCount: true, hooksDismissed: false };
 let agents = [];            // latest from the server, plus ghosts of sessions that just left
 let hooks = false;          // has the plugin sent any hook event?
-let alertsEnabled = "Notification" in window && Notification.permission === "granted";
 const lastSaid = new Map(); // id -> "state|detail" from the previous update
 const pops = new Map();     // id -> when its line last changed, for pop-up bubbles
 const POP_MS = 6000;
@@ -535,7 +534,7 @@ function update(state) {
   agents = withGhosts(state.agents);
   alertOnChanges();
   syncSettingsForm();
-  showBars();
+  showHooksBar();
   showKeysHint(state.shortcuts);
 }
 
@@ -581,11 +580,6 @@ function ring() {
   }
 }
 
-function notify(a) {
-  if (settings.muted || !("Notification" in window) || Notification.permission !== "granted") return;
-  new Notification(`${a.title}: ${a.label}`, { body: a.detail, tag: a.id });
-}
-
 // Browsers only allow sound after a click on the page, so any click unlocks it.
 function unlockAudio() {
   audio ??= new AudioContext();
@@ -598,8 +592,8 @@ function alertOnChanges() {
     const before = prevTier.get(a.id);
     prevTier.set(a.id, a.tier);
     if (before === undefined || before === a.tier) continue;
-    if (a.tier === "urgent") { if (settings.urgentSound) ring(); if (settings.urgentNotify) notify(a); }
-    if (a.tier === "review") { if (settings.reviewSound) ring(); if (settings.reviewNotify) notify(a); }
+    if (a.tier === "urgent" && settings.urgentSound) ring();
+    if (a.tier === "review" && settings.reviewSound) ring();
   }
   const n = agents.filter((a) => a.tier === "urgent" && a.state !== "ended").length;
   const counted = settings.tabCount && n;
@@ -613,11 +607,7 @@ function alertOnChanges() {
   document.getElementById("favicon").href = fav.toDataURL();
 }
 
-function readFlag(key) { try { return localStorage.getItem(key) === "1"; } catch { return false; } }
-function writeFlag(key) { try { localStorage.setItem(key, "1"); } catch { /* private window */ } }
-
-function showBars() {
-  document.getElementById("alerts-bar").hidden = alertsEnabled || readFlag("alertsBarDismissed");
+function showHooksBar() {
   document.getElementById("hooks-bar").hidden = hooks || settings.hooksDismissed || !agents.some((a) => a.source === "live");
 }
 
@@ -637,17 +627,8 @@ document.addEventListener("click", async (e) => {
   const act = e.target.closest("[data-act]")?.dataset.act;
   if (act === "settings") dlg.showModal();
   if (act === "close-settings") dlg.close();
-  if (act === "dismiss-alerts") { writeFlag("alertsBarDismissed"); showBars(); }
   if (act === "dismiss-hooks") post("/api/settings/hooksDismissed/true");
   if (act === "test-sound") { await unlockAudio(); ring(); }
-  if (act === "enable") {
-    await unlockAudio();
-    if ("Notification" in window && Notification.permission === "default") await Notification.requestPermission();
-    alertsEnabled = true;
-    ring();
-    toast("Alerts enabled. That was the red phone.");
-    showBars();
-  }
 });
 
 // The server renders <img data-portrait="id">; the browser draws the face. Datastar morphs the

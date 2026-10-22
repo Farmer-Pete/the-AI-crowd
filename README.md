@@ -2,6 +2,8 @@
 
 A fun overview of all your Claude Code agents in cmux, drawn as a pixel-art IT basement. See every agent at a glance, spot the ones that need your input, and click (or press Enter) to jump straight to that agent's cmux pane.
 
+It uses no AI and spends no tokens. It reads the files Claude Code already writes, plus events from the optional plugin's hooks, which are plain shell commands.
+
 ## Who's in the office
 
 | | |

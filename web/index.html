@@ -41,7 +41,6 @@
   .infobar.hooks { background: #18242a; border-color: #23414d; color: #b7dbe8; }
   .infobar .grow { flex: 1; min-width: 240px; }
   .infobar button { background: transparent; border: 1px solid currentColor; border-radius: 4px; padding: 3px 10px; }
-  .infobar button.primary { background: #f2b233; color: #1b1606; border-color: #f2b233; font-weight: 600; }
   .infobar .x { border: none; opacity: .7; }
 
   .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 3px; font-size: 12px; white-space: nowrap; }
@@ -143,12 +142,6 @@
 <!-- Narrow only (the cmux Dock): the user's cmux keys for the sidebar, plus this page's keys. -->
 <div class="keys-hint" id="keys-hint"></div>
 
-<div class="infobar" id="alerts-bar" hidden>
-  <span class="grow">Alerts are on: a ring and a macOS notification when an agent needs you. Your browser needs one click to allow them. You can change what alerts and how in Settings.</span>
-  <button class="primary" data-act="enable">Enable alerts</button>
-  <button data-act="settings">Settings</button>
-  <button class="x" data-act="dismiss-alerts" title="Dismiss">✕</button>
-</div>
 <div class="infobar hooks" id="hooks-bar" hidden>
   <span class="grow">Without the plugin, sessions are read from ~/.claude/sessions and their transcripts, so a permission prompt vs. a question is a guess and API errors don't show. For exact states, run <code>/plugin marketplace add Farmer-Pete/the-AI-crowd</code> then <code>/plugin install the-ai-crowd@the-ai-crowd</code> in Claude Code.</span>
   <button class="x" data-act="dismiss-hooks" title="Dismiss">✕</button>
@@ -167,13 +160,11 @@
   <section>
     <h3>Urgent (permission, question, error)</h3>
     <label><input type="checkbox" data-set="urgentSound"> Play a sound</label>
-    <label><input type="checkbox" data-set="urgentNotify"> Show a macOS notification</label>
     <label><input type="checkbox" data-set="tabCount"> Count in the tab title and icon</label>
   </section>
   <section>
     <h3>Review (finished a turn)</h3>
     <label><input type="checkbox" data-set="reviewSound"> Play a sound</label>
-    <label><input type="checkbox" data-set="reviewNotify"> Show a macOS notification</label>
   </section>
   <section>
     <h3>Sound</h3>
