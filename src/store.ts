@@ -5,7 +5,7 @@
 import { basename } from "node:path";
 import { homedir } from "node:os";
 import type { Agent, State, Tier, ViewAgent } from "./types.ts";
-import { describeTool, firstLine, short, type Transcript } from "./transcript.ts";
+import { describeTool, firstLine, short, type Task, type Transcript } from "./transcript.ts";
 import type { RegistryEntry } from "./registry.ts";
 import type { PaneInfo } from "./cmux.ts";
 
@@ -42,12 +42,13 @@ type Session = Agent & {
   pane: Pane;
   target?: PaneInfo;
   helperTypes: Map<string, string>;
+  awaiting: Task[]; // background tasks it waits on, from the transcript
 };
 
 const URGENT = new Set<State>(["permission", "question", "error", "waiting"]);
 const TIER_ORDER: Record<Tier, number> = { urgent: 0, review: 1, quiet: 2 };
 const LABEL: Record<State, string> = {
-  working: "Working", permission: "Needs permission", question: "Asked you", error: "Errored",
+  working: "Working", background: "Waiting on helpers", permission: "Needs permission", question: "Asked you", error: "Errored",
   waiting: "Needs you", review: "Finished", idle: "Asleep", ended: "Left",
 };
 
@@ -65,7 +66,7 @@ export function createStore(clock: () => number = Date.now) {
       s = {
         id, source: "live", title: "", project: basename(cwd), cwd: tilde(cwd), cwdAbs: cwd,
         state: "idle", since: clock(), detail: "", helpers: [],
-        hooked: false, lastHookAt: 0, pane: {}, helperTypes: new Map(),
+        hooked: false, lastHookAt: 0, pane: {}, helperTypes: new Map(), awaiting: [],
       };
       sessions.set(id, s);
     }
@@ -115,7 +116,8 @@ export function createStore(clock: () => number = Date.now) {
       const what = describeTool(tr.tool.name, tr.tool.input, reg.cwd);
       set(s, ask ? "question" : "permission", ask ? what : `${what}?`, at);
     } else if (reg.status === "waiting") set(s, "waiting", "Waiting on you", at);
-    // "idle" and "shell" both mean the turn ended and the prompt is waiting for you.
+    // "idle" and "shell" both mean the turn ended. "shell" adds a background shell, which may be a server
+    // nobody waits on, so it doesn't count as background work.
     else if (reg.status === "idle" || reg.status === "shell") set(s, "review", firstLine(tr.lastText) || "Finished a turn", at);
     else set(s, "idle", firstLine(tr.lastText), at);
   }
@@ -135,6 +137,7 @@ export function createStore(clock: () => number = Date.now) {
       s.touchedAt = tr.promptAt;
       s.about = renamed?.description || undefined;
       s.target = pane;
+      s.awaiting = awaited(tr, reg.startedAt ?? 0, clock());
       if (!s.hooked) infer(s, reg, tr);
     }
     for (const [id, s] of sessions) if (!ids.has(id) && clock() - s.lastHookAt > HOOK_GRACE_MS) sessions.delete(id);
@@ -155,11 +158,15 @@ export function createStore(clock: () => number = Date.now) {
 
   // Everyone, urgent first, then longest waiting first.
   function view(demo: Agent[] = []): ViewAgent[] {
-    const live: Agent[] = [...sessions.values()].map(({ cwdAbs, pid, hooked, lastHookAt, pane, target, helperTypes, ...a }) => ({
-      ...a,
-      title: a.title || a.project,
-      helpers: [...helperTypes].map(([id, label]) => ({ id, label })),
-    }));
+    const live: Agent[] = [...sessions.values()].map(({ cwdAbs, pid, hooked, lastHookAt, pane, target, helperTypes, awaiting, ...a }) => {
+      const title = a.title || a.project;
+      // A finished turn with tasks still out waits on them, not on you.
+      if (a.state === "review" && awaiting.length) {
+        const helpers = awaiting.filter((t) => t.kind !== "monitor").map(({ id, label }) => ({ id, label }));
+        return { ...a, title, state: "background" as const, detail: waitLine(awaiting), helpers };
+      }
+      return { ...a, title, helpers: [...helperTypes].map(([id, label]) => ({ id, label })) };
+    });
     const all = [...demo, ...live];
     for (const marks of [seen, touched]) for (const id of marks.keys()) if (!all.some((a) => a.id === id)) marks.delete(id);
     return all.map(decorate).sort((x, y) => TIER_ORDER[x.tier] - TIER_ORDER[y.tier] || x.since - y.since);
@@ -179,6 +186,23 @@ export function createStore(clock: () => number = Date.now) {
   };
 
   return { applyHook, applyRegistry, view, markSeen, touch, where, hooksSeen: () => hooksSeen };
+}
+
+// The background tasks a session waits on. When unsure it leaves a task out, so the desk shows
+// Finished and you look: only tasks from this process, nothing after a turn that ends in a question,
+// and only Monitors this turn started that will expire.
+function awaited(tr: Transcript, startedAt: number, now: number): Task[] {
+  if (tr.lastText.trim().endsWith("?")) return [];
+  return (tr.tasks ?? []).filter((t) => t.at >= startedAt &&
+    (t.kind !== "monitor" || (!t.persistent && t.at >= (tr.promptAt ?? 0) && (t.expiresAt ?? 0) > now)));
+}
+
+// "2 helpers: Review the retry design, Audit the webhook tests. Watching CI on PR #212"
+function waitLine(tasks: Task[]): string {
+  const helpers = tasks.filter((t) => t.kind !== "monitor").map((t) => t.label);
+  const parts = tasks.filter((t) => t.kind === "monitor").map((t) => `Watching ${t.label}`);
+  if (helpers.length) parts.unshift(`${helpers.length} ${helpers.length === 1 ? "helper" : "helpers"}: ${helpers.join(", ")}`);
+  return short(parts.join(". "), 140);
 }
 
 export type Store = ReturnType<typeof createStore>;

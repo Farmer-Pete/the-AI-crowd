@@ -5,7 +5,7 @@
 import type { Settings, ViewAgent } from "./types.ts";
 
 const DETAIL_LABEL: Record<string, string> = {
-  working: "Now", permission: "Asks", question: "Asks", waiting: "Asks", error: "Error", review: "Result", idle: "Last", ended: "",
+  working: "Now", background: "Awaits", permission: "Asks", question: "Asks", waiting: "Asks", error: "Error", review: "Result", idle: "Last", ended: "",
 };
 const TIER_HEADING = { urgent: "NEEDS YOU", review: "TO REVIEW", quiet: "FINE" };
 const SAFE_ID = /^[\w.-]{1,100}$/;

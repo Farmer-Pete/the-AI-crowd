@@ -46,3 +46,37 @@ test("the newest human prompt sets promptAt; tool results don't", () => {
   ].join("\n");
   assert.equal(parseTail(tail).promptAt, Date.parse("2026-10-22T07:30:45.941Z"));
 });
+
+// Records shaped like Claude Code's: a launch's toolUseResult, then a queued <task-notification>.
+const launch = (at: string, toolUseResult: object, tool_use_id = "t1") =>
+  line({ type: "user", timestamp: at, toolUseResult, message: { content: [{ type: "tool_result", tool_use_id }] } });
+const notify = (id: string, status: string) =>
+  line({ type: "queue-operation", operation: "enqueue", content: `<task-notification>\n<task-id>${id}</task-id>\n<status>${status}</status>\n</task-notification>` });
+
+test("a background agent stays open until its notification has a status", () => {
+  const agent = launch("2026-10-22T10:00:00Z", { isAsync: true, status: "async_launched", agentId: "a1", description: "Review the design" });
+  assert.deepEqual(parseTail(agent).tasks, [{ id: "a1", kind: "agent", label: "Review the design", at: Date.parse("2026-10-22T10:00:00Z") }]);
+  assert.deepEqual(parseTail([agent, notify("a1", "completed")].join("\n")).tasks, []);
+});
+
+test("a Monitor takes its label from the call and closes on expiry or TaskStop", () => {
+  const call = line({ type: "assistant", message: { content: [{ type: "tool_use", id: "t9", name: "Monitor", input: { description: "CI on PR #212" } }] } });
+  const started = launch("2026-10-22T10:00:00Z", { taskId: "m1", timeoutMs: 60_000, persistent: false }, "t9");
+  const [task] = parseTail([call, started].join("\n")).tasks!;
+  assert.equal(task.label, "CI on PR #212");
+  assert.equal(task.expiresAt, Date.parse("2026-10-22T10:01:00Z"));
+  const event = line({ type: "queue-operation", operation: "enqueue", content: "<task-notification>\n<task-id>m1</task-id>\n<event>PR approved</event>\n</task-notification>" });
+  assert.equal(parseTail([call, started, event].join("\n")).tasks?.length, 1, "an event alone doesn't end it");
+  const expired = line({ type: "queue-operation", operation: "enqueue", content: "<task-notification>\n<task-id>m1</task-id>\n<event>[Monitor expired after 1m]</event>\n</task-notification>" });
+  assert.deepEqual(parseTail([call, started, expired].join("\n")).tasks, []);
+  const stopped = launch("2026-10-22T10:00:30Z", { message: "Successfully stopped task: m1", task_id: "m1", task_type: "monitor_mcp" }, "t10");
+  assert.deepEqual(parseTail([call, started, stopped].join("\n")).tasks, []);
+});
+
+test("workflows count; background shells don't", () => {
+  const tail = [
+    launch("2026-10-22T10:00:00Z", { status: "async_launched", taskId: "w1", taskType: "local_workflow", workflowName: "review-changes" }),
+    launch("2026-10-22T10:00:01Z", { stdout: "", stderr: "", backgroundTaskId: "b1" }, "t2"),
+  ].join("\n");
+  assert.deepEqual(parseTail(tail).tasks?.map((t) => [t.kind, t.label]), [["workflow", "review-changes"]]);
+});

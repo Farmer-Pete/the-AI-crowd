@@ -10,6 +10,7 @@ It uses no AI and spends no tokens. It reads the files Claude Code already write
 |---|---|
 | ![Working](docs/states/working.png) | **Working.** Typing away. Nothing for you to do. |
 | ![Working with helpers](docs/states/helpers.png) | **Working, with helpers.** The badge counts its subagents. Hover it for their names. |
+| ![Waiting on helpers](docs/states/background.png) | **Waiting on helpers.** The turn is over, but its background helpers or a Monitor will report back, so it watches the hourglass. Nothing for you to do yet. A background shell doesn't count, since a dev server looks the same as a build. |
 | ![Chatter](docs/states/chatter.png) | **Chatter.** When an agent starts something new or finishes, a bubble pops up for a few seconds to say what. The CHATTER switch on the wall turns it off. |
 | ![Needs permission](docs/states/permission.png) | **Needs permission.** The red phone rings and the bubble says what it wants to run. Needs you. |
 | ![Asked a question](docs/states/question.png) | **Asked a question.** Hand up, with the question in the bubble. Needs you. |

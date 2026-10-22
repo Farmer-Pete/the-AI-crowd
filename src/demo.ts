@@ -29,6 +29,8 @@ const SCRIPTS: Script[] = [
     segments: [
       { state: "working", secs: 18, detail: "Editing src/webhooks/retry.ts" },
       { state: "permission", secs: 25, detail: "Run pnpm prisma migrate reset?" },
+      { state: "working", secs: 6, detail: "Delegating: Review the retry design", helpers: ["Review the retry design"] },
+      { state: "background", secs: 30, detail: "2 helpers: Review the retry design, Audit the webhook tests", helpers: ["Review the retry design", "Audit the webhook tests"] },
       { state: "working", secs: 12, detail: "Running the test suite" },
       { state: "review", secs: 30, detail: "Webhook retries now back off exponentially. 14 tests pass." },
     ],
@@ -71,6 +73,8 @@ const SCRIPTS: Script[] = [
     segments: [
       { state: "question", secs: 32, detail: "Should dark mode follow the system setting by default?" },
       { state: "working", secs: 12, detail: "Editing src/theme/ThemeProvider.tsx" },
+      { state: "background", secs: 25, detail: "Watching CI on PR #212" },
+      { state: "working", secs: 8, detail: "Reading the CI results" },
     ],
   },
   {

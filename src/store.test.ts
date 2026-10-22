@@ -176,11 +176,43 @@ test("demo agents never doze off on their own", () => {
   assert.equal(store.view([demo])[0].state, "review");
 });
 
-test("a registry status of shell means the turn finished, like idle", () => {
+test("a registry status of shell means the turn finished: a background shell may be a server", () => {
   const { store, one } = setup();
   store.applyRegistry([{ reg: reg("shell"), tr: { title: "", lastText: "Pushed the fix." } }]);
   assert.equal(one()?.state, "review");
   assert.equal(one()?.detail, "Pushed the fix.");
+});
+
+const agentTask = (at: number) => ({ id: "a1", kind: "agent" as const, label: "Review the design", at });
+
+test("a finished turn with a helper still out waits on it, not on you", () => {
+  const { store, hook, one } = setup();
+  hook("Stop", { last_assistant_message: "Started a review. I'll report back." });
+  store.applyRegistry([{ reg: reg("idle", { startedAt: 100 }), tr: { title: "", lastText: "Started a review. I'll report back.", tasks: [agentTask(200)] } }]);
+  assert.equal(one()?.state, "background");
+  assert.equal(one()?.tier, "quiet");
+  assert.equal(one()?.label, "Waiting on helpers");
+  assert.equal(one()?.detail, "1 helper: Review the design");
+  assert.deepEqual(one()?.helpers, [{ id: "a1", label: "Review the design" }]);
+  store.applyRegistry([{ reg: reg("idle", { startedAt: 100 }), tr: { title: "", lastText: "Done.", tasks: [] } }]);
+  assert.equal(one()?.state, "review");
+  assert.equal(one()?.detail, "Started a review. I'll report back.");
+});
+
+test("when unsure, a desk shows Finished instead of waiting on background work", () => {
+  const { store, one } = setup();
+  const finished = (tr: object, startedAt = 100) => {
+    store.applyRegistry([{ reg: reg("idle", { startedAt }), tr: { title: "", lastText: "", ...tr } }]);
+    return one()?.state;
+  };
+  assert.equal(finished({ tasks: [agentTask(200)] }), "background");
+  assert.equal(finished({ lastText: "Which option do you want?", tasks: [agentTask(200)] }), "review", "it asked you something");
+  assert.equal(finished({ tasks: [agentTask(200)] }, 300), "review", "launched by an earlier process");
+  const monitor = { id: "m1", kind: "monitor" as const, label: "CI", at: 200, expiresAt: 2_000_000 };
+  assert.equal(finished({ promptAt: 150, tasks: [monitor] }), "background");
+  assert.equal(finished({ promptAt: 250, tasks: [monitor] }), "review", "started before your last prompt");
+  assert.equal(finished({ promptAt: 150, tasks: [{ ...monitor, persistent: true }] }), "review", "a standing watch");
+  assert.equal(finished({ promptAt: 150, tasks: [{ ...monitor, expiresAt: 500 }] }), "review", "expired");
 });
 
 test("a prompt, a jump, or a prompt in the transcript sets the last interaction", () => {

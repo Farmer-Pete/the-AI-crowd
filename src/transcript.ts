@@ -1,5 +1,5 @@
 // Reads the tail of a Claude Code session transcript (~/.claude/projects/<cwd>/<id>.jsonl):
-// its AI title, the latest tool call, and the latest assistant text.
+// its AI title, the latest tool call, the latest assistant text, and the background tasks still open.
 
 import { open, stat } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -9,8 +9,11 @@ const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const TAIL_BYTES = 512 * 1024;
 
 export type ToolUse = { id: string; name: string; input: Record<string, any>; pending: boolean };
+// A background task the session will hear back from: a helper agent, a workflow, or a Monitor.
+// Background shells are left out. A dev server and a build look the same, and only one is awaited.
+export type Task = { id: string; kind: "agent" | "workflow" | "monitor"; label: string; at: number; expiresAt?: number; persistent?: boolean };
 // promptAt: when you last typed a prompt (a "user" record with origin.kind "human").
-export type Transcript = { title: string; tool?: ToolUse; lastText: string; promptAt?: number };
+export type Transcript = { title: string; tool?: ToolUse; lastText: string; promptAt?: number; tasks?: Task[] };
 
 const cache = new Map<string, Transcript & { mtimeMs: number }>();
 
@@ -35,17 +38,26 @@ export async function readTranscript(path: string): Promise<Transcript> {
   }
 }
 
-// Walks the lines newest first. A tool call is pending when no tool_result for it came after.
 export function parseTail(text: string): Transcript {
+  const recs: any[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.startsWith("{")) continue;
+    try { recs.push(JSON.parse(line)); } catch { /* partial first line */ }
+  }
+  return { ...latest(recs), tasks: openTasks(recs) };
+}
+
+const contentOf = (rec: any): any[] => (Array.isArray(rec.message?.content) ? rec.message.content : []);
+
+// Walks the records newest first. A tool call is pending when no tool_result for it came after.
+function latest(recs: any[]): Transcript {
   const out: Transcript = { title: "", lastText: "" };
   const answered = new Set<string>();
-  for (const line of text.split("\n").reverse()) {
+  for (let i = recs.length - 1; i >= 0; i--) {
     if (out.title && out.tool && out.lastText && out.promptAt) break;
-    if (!line.startsWith("{")) continue;
-    let rec;
-    try { rec = JSON.parse(line); } catch { continue; } // partial first line
+    const rec = recs[i];
     if (!out.title && rec.type === "ai-title") out.title = rec.aiTitle ?? "";
-    const content = Array.isArray(rec.message?.content) ? rec.message.content : [];
+    const content = contentOf(rec);
     if (rec.type === "user") for (const c of content) if (c.type === "tool_result") answered.add(c.tool_use_id);
     if (!out.promptAt && rec.type === "user" && rec.origin?.kind === "human" && rec.timestamp) out.promptAt = Date.parse(rec.timestamp) || undefined;
     if (rec.type === "assistant") {
@@ -56,6 +68,41 @@ export function parseTail(text: string): Transcript {
     }
   }
   return out;
+}
+
+// Walks the records oldest first. Claude Code records each launch in the tool result's toolUseResult,
+// and says a task ended with a <task-notification> that carries a <status> (a Monitor's last one
+// says it expired instead), or with a TaskStop result.
+function openTasks(recs: any[]): Task[] {
+  const open = new Map<string, Task>();
+  const inputs = new Map<string, Record<string, any>>(); // tool_use id -> input, for a Monitor's description
+  for (const rec of recs) {
+    const at = Date.parse(rec.timestamp) || 0;
+    if (rec.type === "assistant") for (const c of contentOf(rec)) if (c.type === "tool_use") inputs.set(c.id, c.input ?? {});
+    const r = rec.type === "user" ? rec.toolUseResult : undefined;
+    if (r && typeof r === "object") {
+      if (r.status === "async_launched" && typeof r.agentId === "string") {
+        open.set(r.agentId, { id: r.agentId, kind: "agent", label: String(r.description || "a helper"), at });
+      } else if (r.status === "async_launched" && r.taskType === "local_workflow" && typeof r.taskId === "string") {
+        open.set(r.taskId, { id: r.taskId, kind: "workflow", label: String(r.workflowName || "a workflow"), at });
+      } else if (typeof r.taskId === "string" && typeof r.timeoutMs === "number") {
+        const input = inputs.get(contentOf(rec).find((c) => c.type === "tool_result")?.tool_use_id) ?? {};
+        open.set(r.taskId, { id: r.taskId, kind: "monitor", label: String(input.description || "a Monitor"), at, expiresAt: at + r.timeoutMs, persistent: r.persistent === true });
+      }
+      if (typeof r.task_id === "string") open.delete(r.task_id); // TaskStop
+    }
+    for (const note of notifications(rec)) {
+      const id = note.match(/<task-id>(\w+)<\/task-id>/)?.[1];
+      if (id && (/<status>\w+<\/status>/.test(note) || note.includes("[Monitor expired"))) open.delete(id);
+    }
+  }
+  return [...open.values()];
+}
+
+// A notification is queued (a queue-operation), then delivered as a queued command or a user message.
+function notifications(rec: any): string[] {
+  const texts = [rec.type === "queue-operation" ? rec.content : undefined, rec.attachment?.prompt, rec.type === "user" ? rec.message?.content : undefined];
+  return texts.filter((t): t is string => typeof t === "string" && t.includes("<task-notification>"));
 }
 
 export const short = (s: string, n = 90) => (s.length > n ? s.slice(0, n - 1) + "…" : s);

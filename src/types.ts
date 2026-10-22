@@ -1,4 +1,5 @@
-export type State = "working" | "permission" | "question" | "error" | "review" | "idle" | "waiting" | "ended";
+// background: the turn ended, but the session waits on its own helpers or a Monitor, not on you.
+export type State = "working" | "background" | "permission" | "question" | "error" | "review" | "idle" | "waiting" | "ended";
 export type Tier = "urgent" | "review" | "quiet";
 
 export type Helper = { id: string; label: string };

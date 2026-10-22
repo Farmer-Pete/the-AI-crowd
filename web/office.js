@@ -17,7 +17,7 @@ const prevTier = new Map();
 let picked;                 // the desk or list row picked with the arrow keys: { kind: "desk" | "row", id }
 
 // The detail line means different things by state, so it always carries its label.
-const DETAIL_LABEL = { working: "Now", permission: "Asks", question: "Asks", waiting: "Asks", error: "Error", review: "Result", idle: "Last", ended: "" };
+const DETAIL_LABEL = { working: "Now", background: "Awaits", permission: "Asks", question: "Asks", waiting: "Asks", error: "Error", review: "Result", idle: "Last", ended: "" };
 
 // /demo shows the scripted demo agents through this same page. Its stream and every action carry demo=1.
 const DEMO = location.pathname === "/demo";
@@ -106,6 +106,10 @@ function drawPerson(c, x, y, look, pose, t) {
     px(c, cx - 8, y + 12, 2, 9, sleeve); px(c, cx + 6, y + 4, 2, 8, sleeve); px(c, cx + 5, y + 3, 3, 3, look.skin);
   } else if (pose === "idle") {
     px(c, cx - 8, y + 17, 16, 3, sleeve);
+  } else if (pose === "background") {
+    // arms folded across the chest
+    px(c, cx - 8, y + 12, 2, 6, sleeve); px(c, cx + 6, y + 12, 2, 6, sleeve);
+    px(c, cx - 7, y + 15, 14, 3, sleeve); px(c, cx + 4, y + 14, 2, 2, look.skin); px(c, cx - 6, y + 17, 2, 2, look.skin);
   } else {
     px(c, cx - 8, y + 12, 2, 9, sleeve); px(c, cx + 6, y + 12, 2, 9, sleeve);
   }
@@ -124,7 +128,7 @@ function drawPerson(c, x, y, look, pose, t) {
   if (pose === "idle") return; // face down on the desk
   // face
   const eyeY = headY + 5;
-  const look2 = pose === "permission" ? -1 : 0;
+  const look2 = pose === "permission" ? -1 : pose === "background" ? 1 : 0; // the phone, or the monitor
   if (pose === "review") { px(c, cx - 3, eyeY, 2, 1, "#222"); px(c, cx + 1, eyeY, 2, 1, "#222"); }
   else { px(c, cx - 3 + look2, eyeY, 1, 2, "#222"); px(c, cx + 2 + look2, eyeY, 1, 2, "#222"); }
   if (look.glasses) { c.strokeStyle = "#222"; c.lineWidth = 0.6; c.strokeRect(cx - 4.5, eyeY - 0.8, 3.5, 3); c.strokeRect(cx + 0.8, eyeY - 0.8, 3.5, 3); }
@@ -139,6 +143,23 @@ const GLYPHS = {
   "?": ["111", "001", "011", "000", "010"],
   "z": ["111", "001", "010", "100", "111"],
 };
+// An hourglass centered on (cx, cy): the sand runs down for 4 s, then it flips over.
+// 5 x 7, so it keeps a 1 px gap inside the 13 x 9 screen.
+const GLASS_ROWS = [5, 3, 3, 1, 3, 3, 5]; // widths; the first and last rows are the caps, the middle one the neck
+function hourglass(c, cx, cy, t) {
+  const RUN = 4, FLIP = 0.6, phase = t % (RUN + FLIP), p = Math.min(phase / RUN, 1);
+  c.save();
+  c.translate(cx, cy);
+  if (phase > RUN) c.rotate(((phase - RUN) / FLIP) * Math.PI);
+  GLASS_ROWS.forEach((w, i) => px(c, -w / 2, i - 3.5, w, 1, i === 0 || i === 6 ? "#a0703f" : "#3a2f12"));
+  // Sand settles from the neck outward: the top chamber empties as the bottom fills.
+  const fill = (row, n) => { const w = GLASS_ROWS[row], k = Math.min(n, w); px(c, -w / 2 + Math.floor((w - k) / 2), row - 3.5, k, 1, "#f2b233"); return k; };
+  let top = Math.round((1 - p) * 6), bottom = 6 - top;
+  for (const row of [2, 1]) top -= fill(row, top);
+  for (const row of [5, 4]) bottom -= fill(row, bottom);
+  if (p < 1) px(c, -0.5, -0.5, 1, 1, "#f2b233"); // the falling grain in the neck
+  c.restore();
+}
 function glyph(c, ch, x, y, col) { GLYPHS[ch].forEach((row, j) => [...row].forEach((b, i) => b === "1" && px(c, x + i, y + j, 1, 1, col))); }
 function bubble(c, x, y, chars, col) {
   const w = chars.length * 4 + 3;
@@ -277,6 +298,12 @@ function drawDesk(c, s, t, rowWidth = 0, glyphs = true) {
   const scr = (col) => px(c, mx + 2, my + 2, 13, 9, col);
   switch (a.state) {
     case "working": scr("#0d1a10"); for (let i = 0; i < 4; i++) px(c, mx + 3, my + 3 + i * 2, 3 + ((Math.floor(t * 5) + i * 3) % 9), 1, "#7dff8a"); break;
+    case "background":
+      scr("#15110a");
+      c.save(); c.beginPath(); c.rect(mx + 2, my + 2, 13, 9); c.clip(); // the flip stays inside the screen
+      hourglass(c, mx + 8.5, my + 6.5, t);
+      c.restore();
+      break;
     case "error": scr("#050505"); break;
     case "review": scr("#0d1a10"); px(c, mx + 5, my + 6, 2, 2, "#7dff8a"); px(c, mx + 7, my + 7, 2, 2, "#7dff8a"); px(c, mx + 9, my + 4, 2, 3, "#7dff8a"); break;
     case "idle": scr("#06070c"); px(c, mx + 3 + Math.floor(t * 3) % 10, my + 3 + Math.floor(t * 2) % 7, 2, 2, "#3d6bff"); break;
@@ -288,6 +315,8 @@ function drawDesk(c, s, t, rowWidth = 0, glyphs = true) {
   const shake = ringing ? (Math.floor(t * 20) % 2 ? 1 : -1) : 0;
   px(c, x + 4 + shake, y + 18, 8, 4, "#c0221a"); px(c, x + 3 + shake, y + 16, 10, 2, "#e0362b");
   if (ringing && Math.floor(t * 3) % 2) { px(c, x + 1, y + 13, 1, 2, "#fff"); px(c, x + 14, y + 13, 1, 2, "#fff"); }
+  // a foot tapping under the desk while the helpers finish
+  if (a.state === "background") { const tap = Math.floor(t * 2) % 2; px(c, x + 22, y + 29, 3, 6 - tap, "#3b3f4a"); px(c, x + 21, y + 35 - tap, 5, 2, "#1d1f24"); }
   // mug of tea for review
   if (a.state === "review") { px(c, x + 25, y + 18, 4, 4, "#f0ede4"); px(c, x + 29, y + 19, 1, 2, "#f0ede4"); px(c, x + 26 + (Math.floor(t * 2) % 2), y + 14 - (Math.floor(t * 3) % 3), 1, 2, "#ffffff88"); }
   // fire and smoke for errors

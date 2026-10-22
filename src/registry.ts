@@ -12,8 +12,10 @@ export type RegistryEntry = {
   sessionId: string;
   cwd: string;
   name: string;
-  status: string; // seen so far: busy, waiting, and idle or shell (both: the turn ended, the prompt waits)
+  // busy, waiting, idle, or shell: idle with a background shell still running (from Claude Code's source)
+  status: string;
   statusUpdatedAt: number;
+  startedAt?: number; // when this process started
 };
 
 function alive(pid: number): boolean {
@@ -35,6 +37,7 @@ export async function readRegistry(): Promise<RegistryEntry[]> {
         name: String(s.name ?? ""),
         status: String(s.status ?? ""),
         statusUpdatedAt: Number(s.statusUpdatedAt ?? s.updatedAt ?? Date.now()),
+        startedAt: typeof s.startedAt === "number" ? s.startedAt : undefined,
       });
     } catch { /* file mid-write */ }
   }
