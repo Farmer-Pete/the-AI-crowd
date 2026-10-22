@@ -215,6 +215,17 @@ test("when unsure, a desk shows Finished instead of waiting on background work",
   assert.equal(finished({ promptAt: 150, tasks: [{ ...monitor, expiresAt: 500 }] }), "review", "expired");
 });
 
+test("a waiting shell counts only while the registry says a shell runs", () => {
+  const { store, one } = setup();
+  const tr = { title: "", lastText: "I'll pick up the tests when the watcher reports.", tasks: [{ id: "b1", kind: "shell" as const, label: "Watch the OD1 build", at: 200 }] };
+  store.applyRegistry([{ reg: reg("shell", { startedAt: 100 }), tr }]);
+  assert.equal(one()?.state, "background");
+  assert.equal(one()?.detail, "Watch the OD1 build");
+  assert.deepEqual(one()?.helpers, []);
+  store.applyRegistry([{ reg: reg("idle", { startedAt: 100 }), tr }]);
+  assert.equal(one()?.state, "review", "the shell ended without a notice in the tail");
+});
+
 test("a prompt, a jump, or a prompt in the transcript sets the last interaction", () => {
   const { store, hook, one, tick } = setup();
   store.applyRegistry([{ reg: reg("idle"), tr: { title: "", lastText: "", promptAt: 500 } }]);

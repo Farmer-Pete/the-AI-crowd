@@ -137,7 +137,7 @@ export function createStore(clock: () => number = Date.now) {
       s.touchedAt = tr.promptAt;
       s.about = renamed?.description || undefined;
       s.target = pane;
-      s.awaiting = awaited(tr, reg.startedAt ?? 0, clock());
+      s.awaiting = awaited(tr, reg, clock());
       if (!s.hooked) infer(s, reg, tr);
     }
     for (const [id, s] of sessions) if (!ids.has(id) && clock() - s.lastHookAt > HOOK_GRACE_MS) sessions.delete(id);
@@ -162,7 +162,7 @@ export function createStore(clock: () => number = Date.now) {
       const title = a.title || a.project;
       // A finished turn with tasks still out waits on them, not on you.
       if (a.state === "review" && awaiting.length) {
-        const helpers = awaiting.filter((t) => t.kind !== "monitor").map(({ id, label }) => ({ id, label }));
+        const helpers = awaiting.filter((t) => t.kind === "agent" || t.kind === "workflow").map(({ id, label }) => ({ id, label }));
         return { ...a, title, state: "background" as const, detail: waitLine(awaiting), helpers };
       }
       return { ...a, title, helpers: [...helperTypes].map(([id, label]) => ({ id, label })) };
@@ -190,17 +190,18 @@ export function createStore(clock: () => number = Date.now) {
 
 // The background tasks a session waits on. When unsure it leaves a task out, so the desk shows
 // Finished and you look: only tasks from this process, nothing after a turn that ends in a question,
-// and only Monitors this turn started that will expire.
-function awaited(tr: Transcript, startedAt: number, now: number): Task[] {
+// only Monitors this turn started that will expire, and shells only while the registry says one runs.
+function awaited(tr: Transcript, reg: RegistryEntry, now: number): Task[] {
   if (tr.lastText.trim().endsWith("?")) return [];
-  return (tr.tasks ?? []).filter((t) => t.at >= startedAt &&
-    (t.kind !== "monitor" || (!t.persistent && t.at >= (tr.promptAt ?? 0) && (t.expiresAt ?? 0) > now)));
+  return (tr.tasks ?? []).filter((t) => t.at >= (reg.startedAt ?? 0) &&
+    (t.kind !== "monitor" || (!t.persistent && t.at >= (tr.promptAt ?? 0) && (t.expiresAt ?? 0) > now)) &&
+    (t.kind !== "shell" || reg.status === "shell"));
 }
 
-// "2 helpers: Review the retry design, Audit the webhook tests. Watching CI on PR #212"
+// "2 helpers: Review the retry design, Audit the webhook tests. Watching CI on PR #212. Wait for the build"
 function waitLine(tasks: Task[]): string {
-  const helpers = tasks.filter((t) => t.kind !== "monitor").map((t) => t.label);
-  const parts = tasks.filter((t) => t.kind === "monitor").map((t) => `Watching ${t.label}`);
+  const helpers = tasks.filter((t) => t.kind === "agent" || t.kind === "workflow").map((t) => t.label);
+  const parts = tasks.filter((t) => t.kind !== "agent" && t.kind !== "workflow").map((t) => (t.kind === "monitor" ? `Watching ${t.label}` : t.label));
   if (helpers.length) parts.unshift(`${helpers.length} ${helpers.length === 1 ? "helper" : "helpers"}: ${helpers.join(", ")}`);
   return short(parts.join(". "), 140);
 }

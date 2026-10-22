@@ -9,9 +9,11 @@ const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const TAIL_BYTES = 512 * 1024;
 
 export type ToolUse = { id: string; name: string; input: Record<string, any>; pending: boolean };
-// A background task the session will hear back from: a helper agent, a workflow, or a Monitor.
-// Background shells are left out. A dev server and a build look the same, and only one is awaited.
-export type Task = { id: string; kind: "agent" | "workflow" | "monitor"; label: string; at: number; expiresAt?: number; persistent?: boolean };
+// A background task the session will hear back from: a helper agent, a workflow, a Monitor, or a shell
+// that waits on something. Other background shells are left out: a dev server and a build watcher
+// look the same, except that Claude describes a watcher as "Wait…", "Watch…", or "Poll…".
+export type Task = { id: string; kind: "agent" | "workflow" | "monitor" | "shell"; label: string; at: number; expiresAt?: number; persistent?: boolean };
+const WAITS = /^(wait|watch|poll)\b/i;
 // promptAt: when you last typed a prompt (a "user" record with origin.kind "human").
 export type Transcript = { title: string; tool?: ToolUse; lastText: string; promptAt?: number; tasks?: Task[] };
 
@@ -75,7 +77,8 @@ function latest(recs: any[]): Transcript {
 // says it expired instead), or with a TaskStop result.
 function openTasks(recs: any[]): Task[] {
   const open = new Map<string, Task>();
-  const inputs = new Map<string, Record<string, any>>(); // tool_use id -> input, for a Monitor's description
+  const inputs = new Map<string, Record<string, any>>(); // tool_use id -> input, for a description
+  const inputOf = (rec: any) => inputs.get(contentOf(rec).find((c) => c.type === "tool_result")?.tool_use_id) ?? {};
   for (const rec of recs) {
     const at = Date.parse(rec.timestamp) || 0;
     if (rec.type === "assistant") for (const c of contentOf(rec)) if (c.type === "tool_use") inputs.set(c.id, c.input ?? {});
@@ -86,8 +89,10 @@ function openTasks(recs: any[]): Task[] {
       } else if (r.status === "async_launched" && r.taskType === "local_workflow" && typeof r.taskId === "string") {
         open.set(r.taskId, { id: r.taskId, kind: "workflow", label: String(r.workflowName || "a workflow"), at });
       } else if (typeof r.taskId === "string" && typeof r.timeoutMs === "number") {
-        const input = inputs.get(contentOf(rec).find((c) => c.type === "tool_result")?.tool_use_id) ?? {};
+        const input = inputOf(rec);
         open.set(r.taskId, { id: r.taskId, kind: "monitor", label: String(input.description || "a Monitor"), at, expiresAt: at + r.timeoutMs, persistent: r.persistent === true });
+      } else if (typeof r.backgroundTaskId === "string" && WAITS.test(String(inputOf(rec).description ?? ""))) {
+        open.set(r.backgroundTaskId, { id: r.backgroundTaskId, kind: "shell", label: String(inputOf(rec).description), at });
       }
       if (typeof r.task_id === "string") open.delete(r.task_id); // TaskStop
     }

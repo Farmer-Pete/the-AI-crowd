@@ -80,3 +80,17 @@ test("workflows count; background shells don't", () => {
   ].join("\n");
   assert.deepEqual(parseTail(tail).tasks?.map((t) => [t.kind, t.label]), [["workflow", "review-changes"]]);
 });
+
+test("a background shell counts only when its description says it waits", () => {
+  const shell = (id: string, description: string, at: string) => [
+    line({ type: "assistant", message: { content: [{ type: "tool_use", id: `t-${id}`, name: "Bash", input: { command: "x", description, run_in_background: true } }] } }),
+    launch(at, { stdout: "", stderr: "", backgroundTaskId: id }, `t-${id}`),
+  ];
+  const tail = [
+    ...shell("b1", "Watch the OD1 build until it finishes", "2026-10-22T10:00:00Z"),
+    ...shell("b2", "Start the dev server", "2026-10-22T10:00:01Z"),
+    ...shell("b3", "Wait for the ephemeral to start", "2026-10-22T10:00:02Z"),
+    notify("b3", "completed"),
+  ].join("\n");
+  assert.deepEqual(parseTail(tail).tasks?.map((t) => [t.kind, t.label]), [["shell", "Watch the OD1 build until it finishes"]]);
+});
