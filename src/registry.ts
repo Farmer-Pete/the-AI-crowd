@@ -12,7 +12,7 @@ export type RegistryEntry = {
   sessionId: string;
   cwd: string;
   name: string;
-  status: string; // seen so far: busy, idle, waiting, shell
+  status: string; // seen so far: busy, waiting, and idle or shell (both: the turn ended, the prompt waits)
   statusUpdatedAt: number;
 };
 

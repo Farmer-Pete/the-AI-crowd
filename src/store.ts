@@ -9,8 +9,10 @@ import { describeTool, firstLine, short, type Transcript } from "./transcript.ts
 import type { RegistryEntry } from "./registry.ts";
 import type { PaneInfo } from "./cmux.ts";
 
-// A Finished agent stays in Review until you have seen it. It falls asleep this long after you saw it.
+// A Finished session falls asleep 30 minutes after you've seen it,
 export const ASLEEP_AFTER_MS = 30 * 60_000;
+// or 2 hours after it finished if you never looked. Live sessions only: the demo's Finished desk stays put.
+export const UNSEEN_ASLEEP_AFTER_MS = 2 * 60 * 60_000;
 // A hooked session missing from the registry for this long is treated as gone.
 const HOOK_GRACE_MS = 10_000;
 
@@ -54,6 +56,7 @@ const tilde = (p: string) => p.replace(homedir(), "~");
 export function createStore(clock: () => number = Date.now) {
   const sessions = new Map<string, Session>();
   const seen = new Map<string, { since: number; at: number }>();
+  const touched = new Map<string, number>(); // id -> when you last prompted it or jumped to it
   let hooksSeen = false;
 
   function session(id: string, cwd: string): Session {
@@ -87,7 +90,7 @@ export function createStore(clock: () => number = Date.now) {
     const tool = () => describeTool(e.tool_name ?? "", e.tool_input ?? {}, e.cwd ?? s.cwdAbs);
     switch (e.hook_event_name) {
       case "SessionStart": set(s, "idle", "Ready for a prompt"); break;
-      case "UserPromptSubmit": set(s, "working", "Thinking"); break;
+      case "UserPromptSubmit": set(s, "working", "Thinking"); touched.set(s.id, clock()); break;
       case "PreToolUse": set(s, e.tool_name === "AskUserQuestion" ? "question" : "working", tool()); break;
       case "PostToolUse": set(s, "working", tool()); break;
       case "PermissionRequest": set(s, "permission", `${tool()}?`); break;
@@ -112,8 +115,9 @@ export function createStore(clock: () => number = Date.now) {
       const what = describeTool(tr.tool.name, tr.tool.input, reg.cwd);
       set(s, ask ? "question" : "permission", ask ? what : `${what}?`, at);
     } else if (reg.status === "waiting") set(s, "waiting", "Waiting on you", at);
-    else if (reg.status === "idle") set(s, "review", firstLine(tr.lastText) || "Finished a turn", at);
-    else set(s, "idle", reg.status === "shell" ? "At the shell prompt" : firstLine(tr.lastText), at);
+    // "idle" and "shell" both mean the turn ended and the prompt is waiting for you.
+    else if (reg.status === "idle" || reg.status === "shell") set(s, "review", firstLine(tr.lastText) || "Finished a turn", at);
+    else set(s, "idle", firstLine(tr.lastText), at);
   }
 
   // Claude Code names a session once, early on. A cmux workspace someone renamed (its title
@@ -128,6 +132,7 @@ export function createStore(clock: () => number = Date.now) {
       s.project = basename(reg.cwd);
       const renamed = pane && pane.workspaceTitle && pane.workspaceTitle !== pane.surfaceTitle ? pane : undefined;
       s.title = renamed?.workspaceTitle || tr.title || reg.name || s.project;
+      s.touchedAt = tr.promptAt;
       s.about = renamed?.description || undefined;
       s.target = pane;
       if (!s.hooked) infer(s, reg, tr);
@@ -138,10 +143,14 @@ export function createStore(clock: () => number = Date.now) {
   function decorate(a: Agent): ViewAgent {
     const mark = seen.get(a.id);
     const seenIt = a.state === "review" && mark?.since === a.since;
-    const state: State = seenIt && clock() - mark!.at >= ASLEEP_AFTER_MS ? "idle" : a.state;
+    const asleep = seenIt
+      ? clock() - mark!.at >= ASLEEP_AFTER_MS
+      : a.state === "review" && a.source === "live" && clock() - a.since >= UNSEEN_ASLEEP_AFTER_MS;
+    const state: State = asleep ? "idle" : a.state;
     const tier: Tier = URGENT.has(state) ? "urgent" : state === "review" && !seenIt ? "review" : "quiet";
     const label = state === "review" && seenIt ? "Seen" : LABEL[state];
-    return { ...a, state, tier, label };
+    const touchedAt = Math.max(touched.get(a.id) ?? 0, a.touchedAt ?? 0) || undefined;
+    return { ...a, state, tier, label, touchedAt };
   }
 
   // Everyone, urgent first, then longest waiting first.
@@ -152,7 +161,7 @@ export function createStore(clock: () => number = Date.now) {
       helpers: [...helperTypes].map(([id, label]) => ({ id, label })),
     }));
     const all = [...demo, ...live];
-    for (const id of seen.keys()) if (!all.some((a) => a.id === id)) seen.delete(id);
+    for (const marks of [seen, touched]) for (const id of marks.keys()) if (!all.some((a) => a.id === id)) marks.delete(id);
     return all.map(decorate).sort((x, y) => TIER_ORDER[x.tier] - TIER_ORDER[y.tier] || x.since - y.since);
   }
 
@@ -161,12 +170,15 @@ export function createStore(clock: () => number = Date.now) {
     if (a.state === "review") seen.set(a.id, { since: a.since, at: clock() });
   }
 
+  // You jumped to it: it counts as your latest interaction.
+  const touch = (id: string) => { touched.set(id, clock()); };
+
   const where = (id: string) => {
     const s = sessions.get(id);
     return s && { pid: s.pid, pane: s.pane, target: s.target };
   };
 
-  return { applyHook, applyRegistry, view, markSeen, where, hooksSeen: () => hooksSeen };
+  return { applyHook, applyRegistry, view, markSeen, touch, where, hooksSeen: () => hooksSeen };
 }
 
 export type Store = ReturnType<typeof createStore>;

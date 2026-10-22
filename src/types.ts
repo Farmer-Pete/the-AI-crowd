@@ -20,6 +20,8 @@ export type Agent = {
   about?: string;
   // A fixed desk position. Demo agents use it so the office looks the same every time.
   seat?: number;
+  // When you last interacted with it: sent it a prompt or jumped to it. The Dock sorts by this.
+  touchedAt?: number;
 };
 
 // What the page gets: the agent plus what the server worked out about attention.

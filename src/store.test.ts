@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ASLEEP_AFTER_MS, createStore, type HookEvent } from "./store.ts";
+import { ASLEEP_AFTER_MS, UNSEEN_ASLEEP_AFTER_MS, createStore, type HookEvent } from "./store.ts";
 import type { RegistryEntry } from "./registry.ts";
 
 function setup() {
@@ -42,7 +42,7 @@ test("a finished turn waits in Review until seen, then sleeps 30 minutes after t
   assert.equal(one()?.tier, "review");
   assert.equal(one()?.detail, "Done");
   tick(2 * ASLEEP_AFTER_MS);
-  assert.equal(one()?.tier, "review", "unseen work never falls asleep");
+  assert.equal(one()?.tier, "review", "unseen work waits longer than seen work");
   store.markSeen(one()!);
   assert.equal(one()?.tier, "quiet");
   assert.equal(one()?.label, "Seen");
@@ -155,4 +155,53 @@ test("a workspace that only mirrors the terminal title doesn't override the AI t
   store.applyRegistry([{ reg: reg("idle"), tr: { title: "Retry backoff", lastText: "" }, pane: pane("zsh", "zsh") }]);
   assert.equal(one()?.title, "Retry backoff");
   assert.equal(one()?.about, undefined);
+});
+
+test("a finished turn nobody looks at falls asleep after 2 hours", () => {
+  const { hook, one, tick } = setup();
+  hook("Stop");
+  tick(UNSEEN_ASLEEP_AFTER_MS - 1);
+  assert.equal(one()?.tier, "review");
+  tick(1);
+  assert.equal(one()?.state, "idle");
+  assert.equal(one()?.label, "Asleep");
+  assert.equal(one()?.tier, "quiet");
+});
+
+test("demo agents never doze off on their own", () => {
+  let now = 0;
+  const store = createStore(() => now);
+  const demo = { id: "d", source: "demo" as const, title: "Demo", project: "demo", cwd: "~", state: "review" as const, since: 0, detail: "", helpers: [] };
+  now = 10 * UNSEEN_ASLEEP_AFTER_MS;
+  assert.equal(store.view([demo])[0].state, "review");
+});
+
+test("a registry status of shell means the turn finished, like idle", () => {
+  const { store, one } = setup();
+  store.applyRegistry([{ reg: reg("shell"), tr: { title: "", lastText: "Pushed the fix." } }]);
+  assert.equal(one()?.state, "review");
+  assert.equal(one()?.detail, "Pushed the fix.");
+});
+
+test("a prompt, a jump, or a prompt in the transcript sets the last interaction", () => {
+  const { store, hook, one, tick } = setup();
+  store.applyRegistry([{ reg: reg("idle"), tr: { title: "", lastText: "", promptAt: 500 } }]);
+  assert.equal(one()?.touchedAt, 500);
+  tick(1000);
+  hook("UserPromptSubmit");
+  const prompted = one()!.touchedAt!;
+  assert.ok(prompted > 500);
+  tick(1000);
+  store.touch("s1");
+  assert.equal(one()?.touchedAt, prompted + 1000);
+});
+
+test("demo agents can be touched too", () => {
+  let now = 0;
+  const store = createStore(() => now);
+  const demo = { id: "d", source: "demo" as const, title: "Demo", project: "demo", cwd: "~", state: "working" as const, since: 0, detail: "", helpers: [] };
+  assert.equal(store.view([demo])[0].touchedAt, undefined);
+  now = 42;
+  store.touch("d");
+  assert.equal(store.view([demo])[0].touchedAt, 42);
 });

@@ -92,6 +92,7 @@ async function jump(v: View, id: string, fromCmux = false): Promise<string> {
   const a = v.agents().find((x) => x.id === id);
   if (!a) return "That agent has gone home.";
   v.store.markSeen(a);
+  v.store.touch(a.id);
   if (a.source === "demo") return `${a.title} is a demo agent, so there's no pane to jump to.`;
   const target = store.where(id)?.target;
   if (!target) return `Couldn't find a cmux pane for ${a.title}. Is it running in cmux?`;

@@ -161,8 +161,9 @@ function deskSlots(list, cols, w, top) {
 
 // Desk order is stable: first seen, first seated. An agent with a seat number (the demo's)
 // takes its place in seat order instead, so the demo office looks the same every time.
+// byRecent (the cmux Dock): your latest interaction sits at the top; ties keep the stable order.
 const seatOrder = [];
-function seated(list) {
+function seated(list, byRecent = false) {
   const byId = new Map(list.map((a) => [a.id, a]));
   for (const a of list) {
     if (seatOrder.includes(a.id)) continue;
@@ -170,7 +171,8 @@ function seated(list) {
     if (before < 0) seatOrder.push(a.id); else seatOrder.splice(before, 0, a.id);
   }
   for (let i = seatOrder.length - 1; i >= 0; i--) if (!byId.has(seatOrder[i])) seatOrder.splice(i, 1);
-  return seatOrder.map((id) => byId.get(id));
+  const stable = seatOrder.map((id) => byId.get(id));
+  return byRecent ? stable.sort((a, b) => (b.touchedAt ?? 0) - (a.touchedAt ?? 0)) : stable;
 }
 
 // Lays out the wall props left to right in logical pixels, for any office width.
@@ -244,7 +246,8 @@ function drawRoom(c, w, h, t, wall) {
 }
 
 // rowWidth > 0 means a one-column office: a colored divider under each desk replaces the outline.
-function drawDesk(c, s, t, rowWidth = 0) {
+// glyphs: draw the small "!" and "?" bubbles. Only the small map needs them; elsewhere the speech bubble says it.
+function drawDesk(c, s, t, rowWidth = 0, glyphs = true) {
   const { a, x, y } = s;
   const tier = a.tier;
   const pulse = 0.35 + 0.35 * Math.sin(t * 6);
@@ -292,10 +295,10 @@ function drawDesk(c, s, t, rowWidth = 0) {
     for (let i = 0; i < 4; i++) px(c, mx + 2 + i * 4, my + 10 - (Math.floor(t * 12 + i) % 3), 3, 3, i % 2 ? "#ffcc33" : "#ff6a1a");
   }
   // bubbles
-  if (a.state === "permission") bubble(c, x + 6, y - 9, "!", "#d22");
-  if (a.state === "question") bubble(c, x + 6, y - 9, "?", "#2a62d4");
-  if (a.state === "waiting") bubble(c, x + 4, y - 9, "!?", "#d22");
-  if (a.state === "error") bubble(c, x + 6, y - 9, "!", "#d22");
+  if (glyphs && a.state === "permission") bubble(c, x + 6, y - 9, "!", "#d22");
+  if (glyphs && a.state === "question") bubble(c, x + 6, y - 9, "?", "#2a62d4");
+  if (glyphs && a.state === "waiting") bubble(c, x + 4, y - 9, "!?", "#d22");
+  if (glyphs && a.state === "error") bubble(c, x + 6, y - 9, "!", "#d22");
   // asleep: an empty chair with z's drifting up from it
   if (a.state === "idle") for (let i = 0; i < 2; i++) { const p = (t * 0.5 + i * 0.5) % 1; glyph(c, "z", x + 17 + p * 6, y + 8 - p * 14, `rgba(220,220,255,${1 - p})`); }
   // helpers (subagents): one badge above the desk, a tiny figure plus a count drawn in the label pass
@@ -340,9 +343,11 @@ function speech(c, s, scale, lw, alpha = 1) {
   const lines = wrap(c, `${label ? label.toUpperCase() + ": " : ""}${a.detail}`, CELL_W * scale - 30, 4);
   const w = Math.max(...lines.map((l) => c.measureText(l).width)) + 18;
   const h = lines.length * 15 + 11;
-  const tx = (s.x + CELL_W / 2) * scale;
-  const x = tx - w / 2;
-  const y = Math.max(2, (s.y - 11) * scale - h); // keeps the top row's bubbles on the canvas
+  // The box stays centred on its desk, so it never runs into the next one. The tail points
+  // down at the person's head (drawPerson puts it at x + 20), ending just above the hair.
+  const x = (s.x + CELL_W / 2) * scale - w / 2;
+  const tx = Math.min(Math.max((s.x + 20) * scale, x + 12), x + w - 12);
+  const y = Math.max(2, (s.y - 2) * scale - 8 - h); // keeps the top row's bubbles on the canvas
   c.fillStyle = urgent ? "#fdfbf3" : "#0d1a10";
   c.strokeStyle = urgent ? "#ff4d3d" : "#7dff8a";
   c.lineWidth = 2;
@@ -392,13 +397,33 @@ function mountOffice(host, scale) {
   let lw = 0;
   let hoverId;
   let wall;
+  let targets = [];     // where each desk belongs this frame
+  let lastMs;
+  const shown = new Map(); // id -> where the desk is drawn now, gliding toward its target
+
+  // Moves each desk part of the way to its target every frame (ease-out, about a third of a
+  // second end to end). A new desk appears in place; a desk that left is forgotten.
+  function glide(list, dt) {
+    const k = 1 - Math.exp(-dt * 12);
+    const ids = new Set(list.map((s) => s.a.id));
+    for (const id of shown.keys()) if (!ids.has(id)) shown.delete(id);
+    return list.map((s) => {
+      const p = shown.get(s.a.id);
+      if (!p) { shown.set(s.a.id, { x: s.x, y: s.y }); return s; }
+      p.x += (s.x - p.x) * k;
+      p.y += (s.y - p.y) * k;
+      if (Math.abs(s.x - p.x) < 0.3 && Math.abs(s.y - p.y) < 0.3) { p.x = s.x; p.y = s.y; }
+      return { ...s, x: Math.round(p.x), y: Math.round(p.y) };
+    });
+  }
   function frame(ms) {
     if (!alive) return;
     const t = ms / 1000;
     const wpx = host.clientWidth || 600;
     lw = Math.floor(wpx / scale);
     const cols = Math.max(1, Math.floor((lw - PAD * 2) / CELL_W));
-    const list = seated(agents);
+    // The cmux Dock: inside cmux and narrow.
+    const list = seated(agents, IN_CMUX && wpx < NARROW_PX);
     const rows = Math.max(2, Math.ceil(list.length / cols));
     const top = wpx < NARROW_PX ? 8 : WALL_H;
     const lh = top + 8 + rows * CELL_H;
@@ -407,9 +432,13 @@ function mountOffice(host, scale) {
     c.imageSmoothingEnabled = false;
     wall = top === WALL_H ? wallLayout(c, lw, scale) : null;
     drawRoom(c, lw, lh, t, wall);
-    slots = deskSlots(list, cols, lw, top);
+    targets = deskSlots(list, cols, lw, top);
+    slots = glide(targets, (ms - (lastMs ?? ms)) / 1000);
+    lastMs = ms;
     const single = cols === 1;
-    slots.forEach((s) => drawDesk(c, s, t, single ? lw : 0));
+    // Desks still gliding draw last, so they slide over the desks they pass.
+    const moving = (s, i) => (s.x !== targets[i].x || s.y !== targets[i].y ? 1 : 0);
+    slots.map((s, i) => [s, moving(s, i)]).sort((p, q) => p[1] - q[1]).forEach(([s]) => drawDesk(c, s, t, single ? lw : 0, scale < 2));
     // name labels in real pixels so they stay sharp
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.font = `${Math.max(8, scale * 3.6)}px "IBM Plex Mono", monospace`;
@@ -454,13 +483,16 @@ function mountOffice(host, scale) {
   return {
     destroy() { alive = false; },
     // Where a desk sits in the viewport, in CSS pixels, so the page can scroll it into view.
+    // Where a desk is heading (not where it is mid-glide), so scrolling aims at its final place.
     deskBox(id) {
-      const s = slots.find((x) => x.a.id === id);
+      const s = targets.find((x) => x.a.id === id);
       if (!s) return undefined;
       const r = canvas.getBoundingClientRect();
       const k = (r.width / canvas.width) * scale;
-      return { top: r.top + (s.y - 10) * k, bottom: r.top + (s.y + 47) * k, firstRow: s.y === slots[0].y };
+      return { top: r.top + (s.y - 10) * k, bottom: r.top + (s.y + 47) * k, firstRow: s.y === targets[0].y };
     },
+    // The desks in the order the office shows them, for the keyboard walk.
+    deskIds: () => targets.filter((s) => s.a.state !== "ended").map((s) => s.a.id),
   };
 }
 
@@ -635,7 +667,7 @@ new MutationObserver(decorateList).observe(document.body, { childList: true, sub
 // ↑ walks back and stops at the first desk. Enter jumps to the picked session, Esc clears.
 // In the cmux Dock, ⌘⇧E gives this page keyboard focus.
 function pickables() {
-  const desks = seated(agents).filter((a) => a.state !== "ended").map((a) => ({ kind: "desk", id: a.id }));
+  const desks = office.deskIds().map((id) => ({ kind: "desk", id }));
   const rows = [...document.querySelectorAll("tr.row[data-id]")].map((r) => ({ kind: "row", id: r.dataset.id }));
   return [...desks, ...rows];
 }

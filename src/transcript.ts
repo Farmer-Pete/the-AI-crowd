@@ -9,7 +9,8 @@ const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const TAIL_BYTES = 512 * 1024;
 
 export type ToolUse = { id: string; name: string; input: Record<string, any>; pending: boolean };
-export type Transcript = { title: string; tool?: ToolUse; lastText: string };
+// promptAt: when you last typed a prompt (a "user" record with origin.kind "human").
+export type Transcript = { title: string; tool?: ToolUse; lastText: string; promptAt?: number };
 
 const cache = new Map<string, Transcript & { mtimeMs: number }>();
 
@@ -39,13 +40,14 @@ export function parseTail(text: string): Transcript {
   const out: Transcript = { title: "", lastText: "" };
   const answered = new Set<string>();
   for (const line of text.split("\n").reverse()) {
-    if (out.title && out.tool && out.lastText) break;
+    if (out.title && out.tool && out.lastText && out.promptAt) break;
     if (!line.startsWith("{")) continue;
     let rec;
     try { rec = JSON.parse(line); } catch { continue; } // partial first line
     if (!out.title && rec.type === "ai-title") out.title = rec.aiTitle ?? "";
     const content = Array.isArray(rec.message?.content) ? rec.message.content : [];
     if (rec.type === "user") for (const c of content) if (c.type === "tool_result") answered.add(c.tool_use_id);
+    if (!out.promptAt && rec.type === "user" && rec.origin?.kind === "human" && rec.timestamp) out.promptAt = Date.parse(rec.timestamp) || undefined;
     if (rec.type === "assistant") {
       const use = [...content].reverse().find((c) => c.type === "tool_use");
       if (!out.tool && use) out.tool = { id: use.id, name: use.name, input: use.input ?? {}, pending: !answered.has(use.id) };

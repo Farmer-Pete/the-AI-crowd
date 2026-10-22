@@ -12,7 +12,7 @@ A fun overview of all your Claude Code agents in cmux, drawn as a pixel-art IT b
 | ![Needs permission](docs/states/permission.png) | **Needs permission.** The red phone rings and the bubble says what it wants to run. Needs you. |
 | ![Asked a question](docs/states/question.png) | **Asked a question.** Hand up, with the question in the bubble. Needs you. |
 | ![Error](docs/states/error.png) | **Error.** An API error stopped the turn, and the monitor is on fire. Needs you. |
-| ![Finished](docs/states/finished.png) | **Finished.** Leaning back with tea until you look at the result. |
+| ![Finished](docs/states/finished.png) | **Finished.** Leaning back with tea until you look at the result. Falls asleep 30 minutes after you look, or after 2 hours if you never do. |
 | ![Asleep](docs/states/asleep.png) | **Asleep.** Nothing new for a while. |
 
 ## Install

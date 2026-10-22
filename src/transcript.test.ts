@@ -38,3 +38,11 @@ test("firstLine takes the first real line without markdown", () => {
   assert.equal(firstLine("\n## **Done.** All `14` tests pass\nmore"), "Done. All 14 tests pass");
   assert.equal(firstLine(undefined), "");
 });
+
+test("the newest human prompt sets promptAt; tool results don't", () => {
+  const tail = [
+    line({ type: "user", origin: { kind: "human" }, timestamp: "2026-10-22T07:30:45.941Z", message: { content: "Fix the grid" } }),
+    line({ type: "user", timestamp: "2026-10-22T07:31:00.000Z", message: { content: [{ type: "tool_result", tool_use_id: "t1" }] } }),
+  ].join("\n");
+  assert.equal(parseTail(tail).promptAt, Date.parse("2026-10-22T07:30:45.941Z"));
+});
