@@ -115,7 +115,7 @@ async function changeSetting(v: View, key: string, value: string): Promise<strin
   const s = v.settings;
   if (!applySetting(s, key, value)) return "That setting doesn't exist.";
   if (!v.demo) await saveSettings(s);
-  if (key === "muted") return s.muted ? "Alerts off. Nobody can reach you down here." : "Alerts back on.";
+  if (key === "muted") return s.muted ? "Sound off. Nobody can reach you down here." : "Sound back on.";
   if (key === "popBubbles") return s.popBubbles ? "Chatter on." : "Chatter off. Only agents that need you will speak up.";
   return "";
 }

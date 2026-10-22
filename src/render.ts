@@ -59,6 +59,6 @@ export function renderChips(view: ViewAgent[], settings: Settings): string {
     `<span class="chip urgent"><b>${n.urgent}</b> need you</span>` +
     `<span class="chip review"><b>${n.review}</b> to review</span>` +
     `<span class="chip quiet"><b>${n.quiet}</b> fine</span>` +
-    (settings.muted ? `<span class="chip urgent"><b>Alerts muted</b></span>` : "") +
+    (settings.muted ? `<span class="chip urgent"><b>Sound muted</b></span>` : "") +
     `</div>`;
 }

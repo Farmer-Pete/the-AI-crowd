@@ -1,4 +1,4 @@
-// The AI Crowd page: the office canvas, alerts, and everything that runs in the browser.
+// The AI Crowd page: the office canvas, sounds, and everything that runs in the browser.
 // The server streams state over SSE. Datastar patches the list and header into the DOM,
 // and hands the _state and _toast signals to window.crowd.patched().
 
@@ -206,8 +206,8 @@ function wallLayout(c, w, scale) {
   const room = w - 26;
   const withChatter = scale >= 2;
   const options = [
-    [settings.muted ? "ALERTS OFF" : "ALERTS ON", settings.popBubbles ? "CHATTER ON" : "CHATTER OFF"],
-    ["ALERTS", "CHATTER"],
+    [settings.muted ? "SOUND OFF" : "SOUND ON", settings.popBubbles ? "CHATTER ON" : "CHATTER OFF"],
+    ["SOUND", "CHATTER"],
     ["", ""],
   ];
   for (const [i, [a, ch]] of options.entries()) {
@@ -219,7 +219,7 @@ function wallLayout(c, w, scale) {
     const end = x + aw + cw;
     return {
       sign,
-      alerts: { x, label: a },
+      sound: { x, label: a },
       chatter: withChatter ? { x: x + aw, label: ch } : null,
       clock: end + 4 <= w - 51 ? w - 42 : null,
     };
@@ -245,7 +245,7 @@ function drawRoom(c, w, h, t, wall) {
   // the sign; its text is drawn in the label pass
   if (wall.sign) px(c, 8, 6, 46, 12, "#1d1f1b");
   // wall switches: lever up means on, down means off
-  drawSwitch(c, wall.alerts.x, !settings.muted);
+  drawSwitch(c, wall.sound.x, !settings.muted);
   if (wall.chatter) drawSwitch(c, wall.chatter.x, settings.popBubbles);
   // fire extinguisher on a wall bracket: body, shoulder, valve, handle, hose, label band
   const ex = w - 20;
@@ -390,7 +390,7 @@ function speech(c, s, scale, lw, alpha = 1) {
 }
 
 // Hit areas on the office wall, in logical pixels.
-const onSwitch = (wall, lx, ly) => !!wall && lx >= wall.alerts.x && lx < wall.alerts.x + 14 && ly >= 3 && ly < 24;
+const onSwitch = (wall, lx, ly) => !!wall && lx >= wall.sound.x && lx < wall.sound.x + 14 && ly >= 3 && ly < 24;
 const onChatter = (wall, lx, ly) => !!wall?.chatter && lx >= wall.chatter.x && lx < wall.chatter.x + 14 && ly >= 3 && ly < 24;
 const onExtinguisher = (wall, lx, ly, w) => !!wall && lx >= w - 21 && lx < w - 10 && ly >= 3 && ly < 25;
 
@@ -417,7 +417,7 @@ function mountOffice(host, scale) {
     const lx = (e.clientX - r.left) / scale, ly = (e.clientY - r.top) / scale;
     const hit = slots.find((s) => badgeHit(s, lx, ly));
     hoverId = slots.find((s) => lx >= s.x && lx < s.x + CELL_W && ly >= s.y - 10 && ly < s.y + CELL_H - 10)?.a.id;
-    canvas.title = onSwitch(wall, lx, ly) ? (settings.muted ? "Turn alerts back on" : "Mute all alerts")
+    canvas.title = onSwitch(wall, lx, ly) ? (settings.muted ? "Turn sound back on" : "Mute all sounds")
       : onChatter(wall, lx, ly) ? (settings.popBubbles ? "Turn off chatter: only urgent asks pop up" : "Turn chatter back on")
       : onExtinguisher(wall, lx, ly, lw) ? "Put out the oldest fire"
       : hit ? `Helpers: ${hit.a.helpers.map((h) => h.label).join(", ")}` : "";
@@ -487,7 +487,7 @@ function mountOffice(host, scale) {
     if (wall) {
       if (wall.sign) { c.font = `${scale * 4}px "Press Start 2P", monospace`; c.fillStyle = "#e7d27a"; c.fillText("AI DEPT", 11 * scale, 15 * scale); }
       c.font = `600 ${scale * 3.4}px "IBM Plex Mono", monospace`;
-      c.fillStyle = settings.muted ? "#ff8a7d" : "#e7d27a"; c.fillText(wall.alerts.label, (wall.alerts.x + 16) * scale, 15 * scale);
+      c.fillStyle = settings.muted ? "#ff8a7d" : "#e7d27a"; c.fillText(wall.sound.label, (wall.sound.x + 16) * scale, 15 * scale);
       if (wall.chatter) { c.fillStyle = settings.popBubbles ? "#e7d27a" : "#ff8a7d"; c.fillText(wall.chatter.label, (wall.chatter.x + 16) * scale, 15 * scale); }
     }
     c.font = `600 ${scale * 4}px "IBM Plex Mono", monospace`; c.fillStyle = "#222";
@@ -539,7 +539,7 @@ function portrait(a) {
 }
 
 // ============================================================================
-// Updates, alerts, settings, chrome
+// Updates, sounds, settings, chrome
 // ============================================================================
 
 // Live sessions that vanish linger for a few seconds as an empty desk.
