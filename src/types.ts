@@ -18,6 +18,8 @@ export type Agent = {
   helpers: Helper[];
   // More about the session, shown on hover: the cmux workspace description, when there is one.
   about?: string;
+  // A fixed desk position. Demo agents use it so the office looks the same every time.
+  seat?: number;
 };
 
 // What the page gets: the agent plus what the server worked out about attention.
@@ -32,6 +34,5 @@ export type Settings = {
   sound: "phone" | "beep";
   muted: boolean;
   popBubbles: boolean;
-  showDemo: boolean;
   hooksDismissed: boolean;
 };

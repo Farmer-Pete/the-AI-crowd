@@ -1,75 +1,47 @@
 # The AI Crowd
 
-A dashboard of every Claude Code session on your Mac, drawn as a pixel-art IT basement. It's a nod to The IT Crowd. Each session gets a desk and a randomly generated staffer. Agents that need you ring the red phone; the rest type quietly, drink tea, or fall asleep. A plain list next to the office gives the facts: session, what it's doing now, what it's asking, what it finished, and how long it has waited.
+A fun overview of all your Claude Code agents in cmux, drawn as a pixel-art IT basement. See every agent at a glance, spot the ones that need your input, and click (or press Enter) to jump straight to that agent's cmux pane.
 
-```
- claude sessions ──(plugin hooks, async curl)──▶ ┌────────────────┐ ──SSE (Datastar)──▶ office + list
- ~/.claude/sessions/*.json + transcripts ──poll──▶│ src/server.ts  │
- ~/.config/the-ai-crowd/config.json ◀──────────▶ └────────────────┘ ◀── clicks (jump, settings)
-```
+## Who's in the office
 
-## Run it
+| | |
+|---|---|
+| ![Working](docs/states/working.png) | **Working.** Typing away. Nothing for you to do. |
+| ![Working with helpers](docs/states/helpers.png) | **Working, with helpers.** The badge counts its subagents. Hover it for their names. |
+| ![Chatter](docs/states/chatter.png) | **Chatter.** When an agent starts something new or finishes, a bubble pops up for a few seconds to say what. The CHATTER switch on the wall turns it off. |
+| ![Needs permission](docs/states/permission.png) | **Needs permission.** The red phone rings and the bubble says what it wants to run. Needs you. |
+| ![Asked a question](docs/states/question.png) | **Asked a question.** Hand up, with the question in the bubble. Needs you. |
+| ![Error](docs/states/error.png) | **Error.** An API error stopped the turn, and the monitor is on fire. Needs you. |
+| ![Finished](docs/states/finished.png) | **Finished.** Leaning back with tea until you look at the result. |
+| ![Asleep](docs/states/asleep.png) | **Asleep.** Nothing new for a while. |
 
-Needs Node 26 or newer. There are no dependencies to install.
+## Install
+
+You need macOS, [cmux](https://cmux.com), Claude Code, and Node 26 or newer. There are no packages to install.
 
 ```sh
-npm start        # http://localhost:4747
-npm test
+git clone git@github.com:Farmer-Pete/the-AI-crowd.git
+cd the-AI-crowd
+npm start
 ```
 
-Set `AI_CROWD_PORT` to use another port; the plugin reads the same variable.
+Run `npm start` from a cmux terminal so The AI Crowd can switch cmux panes. Then open <http://localhost:4747>, or <http://localhost:4747/demo> to see it with demo agents.
 
-## Exact states with the plugin
-
-Without the plugin, The AI Crowd reads `~/.claude/sessions` and the tail of each transcript. That's enough to see every session, but a permission prompt vs. a question is a guess, and API errors don't show. The plugin sends each hook event to the dashboard. The hooks are async and fail quietly, so Claude never waits on them, even when the dashboard isn't running.
-
-In Claude Code:
+For exact states (permission vs. question, API errors), install the Claude Code plugin. In Claude Code:
 
 ```
 /plugin marketplace add Farmer-Pete/the-AI-crowd
 /plugin install the-ai-crowd@the-ai-crowd
 ```
 
-Hooks load when a session starts, so sessions that were already running keep the guessed states until you restart them.
+## Put it in the cmux Dock
 
-## What needs you
+```sh
+cmux new-pane --type browser --placement dock --url http://localhost:4747
+```
 
-| Tier | When | In the office |
-|---|---|---|
-| Urgent | Needs permission, asked a question, or hit an API error | Red outline, ringing phone or raised hand, a speech bubble with the ask |
-| Review | Finished a turn you haven't looked at | Amber outline, leaning back with tea |
-| Quiet | Working, seen, or asleep | Typing, or an empty chair with z's |
+In the Dock, ⌥⌘B shows or hides it, ⇧⌘E focuses it, ↑↓ pick an agent, and Enter jumps to it. Those are cmux's default keys. The Dock shows yours if you changed them.
 
-A finished session stays in Review until you click it or send it a prompt. It falls asleep 30 minutes after you've seen it.
+## License
 
-Clicking a session focuses its cmux pane. Start The AI Crowd from a cmux terminal so it can reach cmux.
-
-## Keep it in the cmux Dock
-
-The page fits the cmux Dock, the right sidebar: `cmux new-pane --type browser --placement dock --url http://localhost:4747`. Below 520 px wide it drops the header items, the info bars, and the office wall, and stacks one desk per row.
-
-- The Dock shows a hint with your own cmux keys for showing and focusing the sidebar. It reads them from `~/.config/cmux/cmux.json`, then cmux Settings, then cmux's defaults (⌥⌘B and ⇧⌘E).
-- ↓ walks the desks, then the list rows, and stops at the last row. ↑ walks back and stops at the first desk.
-- Enter jumps to the picked session. Esc clears the pick.
-- A jump from the Dock hands keyboard focus back to the main pane.
-
-## Alerts and chatter
-
-By default, an urgent session plays a ring and shows a macOS notification. Browsers need one click before they allow either, so the page shows an "Enable alerts" bar until you do. The ALERTS switch on the office wall mutes everything. The CHATTER switch turns off the speech bubbles that pop up when a session starts something new or finishes. Urgent asks still show. The extinguisher jumps to the session that has waited longest.
-
-Settings are saved to `~/.config/the-ai-crowd/config.json`.
-
-## Layout
-
-| Path | What |
-|---|---|
-| `src/server.ts` | HTTP server, Datastar SSE stream, actions |
-| `src/store.ts` | Merges hook events with the registry; tiers, Seen, Asleep |
-| `src/transcript.ts`, `src/registry.ts` | Reading Claude Code's local files |
-| `src/render.ts` | The list and header HTML. Escapes everything from transcripts |
-| `src/cmux.ts` | Finds and focuses a session's cmux pane |
-| `src/demo.ts` | Scripted demo agents (Settings → Show demo agents) |
-| `web/office.js` | The office canvas, characters, bubbles, alerts |
-| `plugin/` | The Claude Code plugin with the hooks |
-
-Datastar 1.0.4 loads from jsDelivr, pinned by a Subresource Integrity hash.
+[MIT](LICENSE)

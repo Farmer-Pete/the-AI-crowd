@@ -6,7 +6,7 @@
 // State from the server
 // ============================================================================
 
-let settings = { muted: false, popBubbles: true, sound: "phone", urgentSound: true, urgentNotify: true, reviewSound: false, reviewNotify: true, tabCount: true, showDemo: false, hooksDismissed: false };
+let settings = { muted: false, popBubbles: true, sound: "phone", urgentSound: true, urgentNotify: true, reviewSound: false, reviewNotify: true, tabCount: true, hooksDismissed: false };
 let agents = [];            // latest from the server, plus ghosts of sessions that just left
 let hooks = false;          // has the plugin sent any hook event?
 let alertsEnabled = "Notification" in window && Notification.permission === "granted";
@@ -20,9 +20,14 @@ let picked;                 // the desk or list row picked with the arrow keys: 
 // The detail line means different things by state, so it always carries its label.
 const DETAIL_LABEL = { working: "Now", permission: "Asks", question: "Asks", waiting: "Asks", error: "Error", review: "Result", idle: "Last", ended: "" };
 
+// /demo shows the scripted demo agents through this same page. Its stream and every action carry demo=1.
+const DEMO = location.pathname === "/demo";
+
 // Every action goes through Datastar's @post on the hidden #actions element.
 function post(path) {
-  document.getElementById("actions").dispatchEvent(new CustomEvent("crowd-post", { detail: path }));
+  const url = new URL(path, location.origin);
+  if (DEMO) url.searchParams.set("demo", "1");
+  document.getElementById("actions").dispatchEvent(new CustomEvent("crowd-post", { detail: url.pathname + url.search }));
 }
 
 // cmux's browser panes (the Dock among them) are WebKit views that expose window.webkit.messageHandlers.
@@ -39,15 +44,18 @@ function rng(seed) { return () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; l
 const pick = (r, arr) => arr[Math.floor(r() * arr.length)];
 
 // Archetypes nod to the show's basement and upstairs crowd without copying anyone.
+// An archetype sets only hair, clothes, and glasses. Skin and hair color are random for every
+// archetype, so no role is tied to a skin tone.
 const ARCHETYPES = [
-  { hair: "fro",     outfit: "tee",      glasses: 0.2 },  // the slacker
+  { hair: "curls",   outfit: "tee",      glasses: 0.2 },  // the night owl
   { hair: "part",    outfit: "vest",     glasses: 0.95 }, // the genius
   { hair: "bob",     outfit: "blazer",   glasses: 0.1 },  // the manager
   { hair: "goth",    outfit: "black",    glasses: 0.0 },  // the one behind the red door
   { hair: "slick",   outfit: "suit",     glasses: 0.1 },  // the boss upstairs
   { hair: "receding",outfit: "cardigan", glasses: 0.6 },  // the old hand
 ];
-const SKIN = ["#f2d0b1", "#e0ac83", "#c68a5c", "#9c6640", "#6e4529", "#f5dccb"];
+// Six skin tones spaced evenly from light to deep.
+const SKIN = ["#f6dcc7", "#e8bd98", "#d39e74", "#b07a50", "#8a5636", "#5e3a24"];
 const HAIR = ["#2a1b10", "#4a2e19", "#6b4423", "#b5651d", "#d8b25a", "#111111", "#7a7a7a"];
 const TEES = ["#c0392b", "#2c7fb8", "#3a8c4e", "#8e44ad", "#d35400", "#34495e", "#b03a6f"];
 
@@ -58,7 +66,7 @@ function lookFor(id) {
   const arch = pick(r, ARCHETYPES);
   const look = {
     ...arch,
-    skin: arch.hair === "goth" ? "#f3e6e3" : pick(r, SKIN),
+    skin: pick(r, SKIN),
     hairColor: arch.hair === "goth" ? "#0b0b0b" : pick(r, HAIR),
     shirt: arch.outfit === "black" ? "#1a1a1a" : arch.outfit === "suit" ? "#2d3142" : pick(r, TEES),
     accent: pick(r, TEES),
@@ -105,7 +113,7 @@ function drawPerson(c, x, y, look, pose, t) {
   // hair
   const h = look.hairColor;
   switch (look.hair) {
-    case "fro": px(c, cx - 7, headY - 3, 14, 6, h); px(c, cx - 7, headY + 3, 2, 5, h); px(c, cx + 5, headY + 3, 2, 5, h); break;
+    case "curls": px(c, cx - 7, headY - 3, 14, 6, h); px(c, cx - 7, headY + 3, 2, 5, h); px(c, cx + 5, headY + 3, 2, 5, h); break;
     case "part": px(c, cx - 5, headY - 1, 10, 3, h); px(c, cx - 5, headY + 2, 2, 2, h); px(c, cx + 1, headY - 1, 1, 1, look.skin); break;
     case "bob": px(c, cx - 6, headY - 1, 12, 4, h); px(c, cx - 6, headY + 3, 2, 8, h); px(c, cx + 4, headY + 3, 2, 8, h); break;
     case "goth": px(c, cx - 6, headY - 1, 12, 3, h); px(c, cx - 6, headY + 2, 2, 13, h); px(c, cx + 4, headY + 2, 2, 13, h); break;
@@ -151,11 +159,16 @@ function deskSlots(list, cols, w, top) {
   return list.map((a, i) => ({ a, x: left + (i % cols) * CELL_W, y: top + 6 + Math.floor(i / cols) * CELL_H }));
 }
 
-// Desk order is stable: first seen, first seated.
+// Desk order is stable: first seen, first seated. An agent with a seat number (the demo's)
+// takes its place in seat order instead, so the demo office looks the same every time.
 const seatOrder = [];
 function seated(list) {
-  for (const a of list) if (!seatOrder.includes(a.id)) seatOrder.push(a.id);
   const byId = new Map(list.map((a) => [a.id, a]));
+  for (const a of list) {
+    if (seatOrder.includes(a.id)) continue;
+    const before = a.seat === undefined ? -1 : seatOrder.findIndex((id) => (byId.get(id)?.seat ?? -Infinity) > a.seat);
+    if (before < 0) seatOrder.push(a.id); else seatOrder.splice(before, 0, a.id);
+  }
   for (let i = seatOrder.length - 1; i >= 0; i--) if (!byId.has(seatOrder[i])) seatOrder.splice(i, 1);
   return seatOrder.map((id) => byId.get(id));
 }
@@ -482,7 +495,8 @@ function update(state) {
   hooks = state.hooks;
   for (const a of state.agents) {
     const said = `${a.state}|${a.detail}`;
-    if (lastSaid.has(a.id) && lastSaid.get(a.id) !== said) pops.set(a.id, Date.now());
+    // A sleeping agent has nothing new to say, so falling asleep never pops a bubble.
+    if (lastSaid.has(a.id) && lastSaid.get(a.id) !== said && a.state !== "idle") pops.set(a.id, Date.now());
     lastSaid.set(a.id, said);
   }
   agents = withGhosts(state.agents);
@@ -556,7 +570,8 @@ function alertOnChanges() {
   }
   const n = agents.filter((a) => a.tier === "urgent" && a.state !== "ended").length;
   const counted = settings.tabCount && n;
-  document.title = counted ? `(${n}) The AI Crowd` : "The AI Crowd";
+  const name = DEMO ? "The AI Crowd (demo)" : "The AI Crowd";
+  document.title = counted ? `(${n}) ${name}` : name;
   const fav = document.createElement("canvas");
   fav.width = fav.height = 32;
   const fc = fav.getContext("2d");
@@ -667,6 +682,7 @@ document.addEventListener("click", (e) => {
 const office = mountOffice(document.getElementById("office"), 3);
 
 window.crowd = {
+  stream: DEMO ? "/events?demo=1" : "/events",
   patched(patch) {
     if (typeof patch?._state === "string") update(JSON.parse(patch._state));
     if (typeof patch?._toast === "string") toast(JSON.parse(patch._toast).text);

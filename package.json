@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "description": "An IT Crowd-themed dashboard of every Claude Code session on your machine.",
+  "license": "MIT",
   "scripts": {
     "start": "node src/server.ts",
     "test": "node --test"

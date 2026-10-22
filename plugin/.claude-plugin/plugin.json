@@ -2,6 +2,7 @@
   "name": "the-ai-crowd",
   "version": "0.1.0",
   "description": "Reports what each Claude Code session is doing to The AI Crowd dashboard running on this machine.",
+  "license": "MIT",
   "author": {
     "name": "Farmer-Pete"
   }

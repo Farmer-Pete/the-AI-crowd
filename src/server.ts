@@ -5,14 +5,15 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
-import { CONFIG_PATH, applySetting, loadSettings, saveSettings } from "./config.ts";
+import { CONFIG_PATH, DEFAULTS, applySetting, loadSettings, saveSettings } from "./config.ts";
 import { demoAgents } from "./demo.ts";
 import { focus, matchPane, readPanes, releaseDockFocus, ttysOf } from "./cmux.ts";
 import { readRegistry } from "./registry.ts";
 import { readShortcuts, type Shortcuts } from "./shortcuts.ts";
 import { renderChips, renderList } from "./render.ts";
-import { createStore, type HookEvent } from "./store.ts";
+import { createStore, type HookEvent, type Store } from "./store.ts";
 import { readTranscript, transcriptPath } from "./transcript.ts";
+import type { Settings, ViewAgent } from "./types.ts";
 
 const PORT = Number(process.env.AI_CROWD_PORT ?? 4747);
 const HOST = "127.0.0.1";
@@ -34,7 +35,16 @@ const CSP = [
 
 const settings = loadSettings();
 const store = createStore();
-const clients = new Set<ServerResponse>();
+
+// Who a page is watching. The live view shows real sessions and saves settings. The /demo page
+// shows only the scripted agents, with its own store (so its own Seen marks) and settings it never saves.
+type View = { demo: boolean; store: Store; settings: Settings; agents: () => ViewAgent[]; hooks: () => boolean };
+const LIVE: View = { demo: false, store, settings, agents: () => store.view(), hooks: store.hooksSeen };
+const demoStore = createStore();
+const DEMO: View = { demo: true, store: demoStore, settings: { ...DEFAULTS }, agents: () => demoStore.view(demoAgents(Date.now())), hooks: () => true };
+const viewFor = (url: URL) => (url.searchParams.has("demo") ? DEMO : LIVE);
+
+const clients = new Map<ServerResponse, View>();
 // The user's cmux keys for the right sidebar, shown in the Dock hint.
 let shortcuts: Shortcuts = { toggle: null, focus: null };
 
@@ -51,8 +61,6 @@ async function pollRegistry() {
   store.applyRegistry(entries);
 }
 
-const currentView = () => store.view(settings.showDemo ? demoAgents(Date.now()) : []);
-
 // ---- Datastar SSE -------------------------------------------------------------
 
 const event = (name: string, lines: string[]) => `event: ${name}\n${lines.map((l) => `data: ${l}\n`).join("")}\n`;
@@ -61,27 +69,29 @@ const patchElements = (html: string) => event("datastar-patch-elements", html.sp
 const patchSignals = (signals: Record<string, unknown>) => event("datastar-patch-signals", [`signals ${JSON.stringify(signals)}`]);
 const toast = (text: string) => patchSignals({ _toast: JSON.stringify({ text, at: Date.now() }) });
 
-function frame(): string {
+function frame(v: View): string {
   const now = Date.now();
-  const view = currentView();
+  const agents = v.agents();
   // The page's office canvas reads _state; underscore signals are never sent back to the server.
-  const state = { now, agents: view, settings, hooks: store.hooksSeen(), shortcuts };
-  return patchElements(renderChips(view, settings)) + patchElements(renderList(view, now)) + patchSignals({ _state: JSON.stringify(state) });
+  const state = { now, agents, settings: v.settings, hooks: v.hooks(), shortcuts };
+  return patchElements(renderChips(agents, v.settings)) + patchElements(renderList(agents, now)) + patchSignals({ _state: JSON.stringify(state) });
 }
 
 function broadcast() {
-  if (!clients.size) return;
-  const f = frame();
-  for (const c of clients) c.write(f);
+  const frames = new Map<View, string>();
+  for (const [res, v] of clients) {
+    if (!frames.has(v)) frames.set(v, frame(v));
+    res.write(frames.get(v)!);
+  }
 }
 
 // ---- actions ------------------------------------------------------------------
 
 // fromCmux: the click or Enter came from a page inside cmux, such as the Dock, which keeps focus unless released.
-async function jump(id: string, fromCmux = false): Promise<string> {
-  const a = currentView().find((x) => x.id === id);
+async function jump(v: View, id: string, fromCmux = false): Promise<string> {
+  const a = v.agents().find((x) => x.id === id);
   if (!a) return "That agent has gone home.";
-  store.markSeen(a);
+  v.store.markSeen(a);
   if (a.source === "demo") return `${a.title} is a demo agent, so there's no pane to jump to.`;
   const target = store.where(id)?.target;
   if (!target) return `Couldn't find a cmux pane for ${a.title}. Is it running in cmux?`;
@@ -94,17 +104,18 @@ async function jump(id: string, fromCmux = false): Promise<string> {
   }
 }
 
-async function fire(fromCmux = false): Promise<string> {
-  const oldest = currentView().find((a) => a.tier === "urgent");
+async function fire(v: View, fromCmux = false): Promise<string> {
+  const oldest = v.agents().find((a) => a.tier === "urgent");
   if (!oldest) return "No fires. Carry on.";
-  return `Putting out the oldest fire. ${await jump(oldest.id, fromCmux)}`;
+  return `Putting out the oldest fire. ${await jump(v, oldest.id, fromCmux)}`;
 }
 
-async function changeSetting(key: string, value: string): Promise<string> {
-  if (!applySetting(settings, key, value)) return "That setting doesn't exist.";
-  await saveSettings(settings);
-  if (key === "muted") return settings.muted ? "Alerts off. Nobody can reach you down here." : "Alerts back on.";
-  if (key === "popBubbles") return settings.popBubbles ? "Chatter on." : "Chatter off. Only agents that need you will speak up.";
+async function changeSetting(v: View, key: string, value: string): Promise<string> {
+  const s = v.settings;
+  if (!applySetting(s, key, value)) return "That setting doesn't exist.";
+  if (!v.demo) await saveSettings(s);
+  if (key === "muted") return s.muted ? "Alerts off. Nobody can reach you down here." : "Alerts back on.";
+  if (key === "popBubbles") return s.popBubbles ? "Chatter on." : "Chatter off. Only agents that need you will speak up.";
   return "";
 }
 
@@ -140,13 +151,14 @@ createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${HOST}`);
   const path = url.pathname;
   try {
-    if (req.method === "GET" && path === "/") return await serveFile(res, "index.html", "text/html; charset=utf-8");
+    if (req.method === "GET" && (path === "/" || path === "/demo")) return await serveFile(res, "index.html", "text/html; charset=utf-8");
     if (req.method === "GET" && path === "/office.js") return await serveFile(res, "office.js", "text/javascript; charset=utf-8");
 
     if (req.method === "GET" && path === "/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });
-      clients.add(res);
-      res.write(frame());
+      const v = viewFor(url);
+      clients.set(res, v);
+      res.write(frame(v));
       req.on("close", () => clients.delete(res));
       return;
     }
@@ -166,10 +178,11 @@ createServer(async (req, res) => {
       await readBody(req); // Datastar sends the page's signals; nothing here needs them
       const [, , action, a, b] = path.split("/").map(decodeURIComponent);
       let text = "";
+      const v = viewFor(url);
       const fromCmux = url.searchParams.get("from") === "cmux";
-      if (action === "jump" && a) text = await jump(a, fromCmux);
-      else if (action === "fire") text = await fire(fromCmux);
-      else if (action === "settings" && a && b) text = await changeSetting(a, b);
+      if (action === "jump" && a) text = await jump(v, a, fromCmux);
+      else if (action === "fire") text = await fire(v, fromCmux);
+      else if (action === "settings" && a && b) text = await changeSetting(v, a, b);
       else { res.writeHead(404).end(); return; }
       sendToast(res, text);
       broadcast();

@@ -129,7 +129,7 @@
 </head>
 <body>
 <!-- Datastar wiring: the event stream, actions from office.js, and signal patches handed to it. -->
-<div id="stream" hidden data-init="@get('/events', {retry: 'always', retryMaxCount: 1000000, openWhenHidden: true})"></div>
+<div id="stream" hidden data-init="@get(window.crowd.stream, {retry: 'always', retryMaxCount: 1000000, openWhenHidden: true})"></div>
 <div id="actions" hidden data-on:crowd-post="@post(evt.detail)"></div>
 <div hidden data-on-signal-patch="window.crowd && window.crowd.patched(patch)"></div>
 
@@ -183,7 +183,6 @@
   <section>
     <h3>Office</h3>
     <label><input type="checkbox" data-set="popBubbles"> Chatter: pop up a speech bubble when an agent starts something new or finishes (same as the CHATTER switch on the office wall)</label>
-    <label><input type="checkbox" data-set="showDemo"> Show demo agents</label>
   </section>
   <section>
     <p class="note">Saved to ~/.config/the-ai-crowd/config.json, which you can also edit by hand.</p>

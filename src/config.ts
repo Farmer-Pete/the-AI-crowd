@@ -17,7 +17,6 @@ export const DEFAULTS: Settings = {
   sound: "phone",
   muted: false,
   popBubbles: true,
-  showDemo: false,
   hooksDismissed: false,
 };
 
