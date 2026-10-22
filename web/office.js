@@ -6,7 +6,7 @@
 // State from the server
 // ============================================================================
 
-let settings = { muted: false, popBubbles: true, sound: "phone", urgentSound: true, reviewSound: false, tabCount: true, hooksDismissed: false };
+let settings = { muted: false, popBubbles: true, sound: "office", urgentSound: true, reviewSound: false, tabCount: true, hooksDismissed: false };
 let agents = [];            // latest from the server, plus ghosts of sessions that just left
 let hooks = false;          // has the plugin sent any hook event?
 const lastSaid = new Map(); // id -> "state|detail" from the previous update
@@ -593,36 +593,58 @@ function toast(msg) {
   toastTimer = setTimeout(() => el.classList.remove("show"), 2600);
 }
 
+// One sound per kind of attention, matching the desk, so you can tell them apart without looking.
+// Each note: [start s, length s, frequencies Hz, wave, peak gain, bell]. A bell note fades out
+// from its start; the others hold, then cut off.
+const SOUNDS = {
+  phone: [[0, 0.35, [400, 450], "sine", 0.12], [0.5, 0.35, [400, 450], "sine", 0.12]], // the red phone rings
+  ding: [[0, 0.3, [988], "triangle", 0.16, true], [0.15, 0.5, [1319], "triangle", 0.16, true]], // a hand goes up
+  buzz: [0, 0.18, 0.36].map((at) => [at, 0.12, [220], "square", 0.05]), // the fire alarm
+  chime: [[0, 0.6, [660], "sine", 0.1, true]], // a turn finished
+  beep: [[0, 0.12, [880], "sine", 0.12]],
+};
+const SOUND_FOR = { permission: "phone", waiting: "phone", question: "ding", error: "buzz", review: "chime" };
+
 let audio;
-function ring() {
-  if (!audio || audio.state !== "running" || settings.muted) return;
+function ring(state) {
+  if (!audio || settings.muted) return;
+  const notes = SOUNDS[settings.sound === "beep" ? "beep" : SOUND_FOR[state] ?? "phone"];
+  // A hidden page's audio can be suspended. Wake it, then play.
+  if (audio.state === "running") play(notes);
+  else audio.resume().then(() => audio.state === "running" && play(notes), () => {});
+}
+
+function play(notes) {
   const now = audio.currentTime;
-  const bursts = settings.sound === "phone" ? [[0, 0.35], [0.5, 0.35]] : [[0, 0.12]];
-  for (const [at, dur] of bursts) {
-    for (const f of settings.sound === "phone" ? [400, 450] : [880]) {
+  for (const [at, dur, freqs, wave, peak, bell] of notes) {
+    for (const f of freqs) {
       const o = audio.createOscillator(), g = audio.createGain();
-      o.frequency.value = f; o.type = "sine";
-      g.gain.setValueAtTime(0.0001, now + at); g.gain.exponentialRampToValueAtTime(0.12, now + at + 0.02);
-      g.gain.setValueAtTime(0.12, now + at + dur - 0.03); g.gain.exponentialRampToValueAtTime(0.0001, now + at + dur);
+      o.frequency.value = f; o.type = wave;
+      g.gain.setValueAtTime(0.0001, now + at); g.gain.exponentialRampToValueAtTime(peak, now + at + 0.015);
+      if (!bell) g.gain.setValueAtTime(peak, now + at + dur - 0.03);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + at + dur);
       o.connect(g).connect(audio.destination); o.start(now + at); o.stop(now + at + dur);
     }
   }
 }
 
-// Browsers only allow sound after a click on the page, so any click unlocks it.
+// Browsers allow sound only after a click or a key press on the page. The cmux Dock let it start with
+// no click since the page loaded (tested). So try right away, then on every click and key until it
+// runs: in the Dock you mostly use the keyboard.
 function unlockAudio() {
   audio ??= new AudioContext();
-  return audio.resume();
+  return audio.state === "running" ? Promise.resolve() : audio.resume();
 }
-addEventListener("pointerdown", unlockAudio, { once: true });
+for (const type of ["pointerdown", "keydown"]) addEventListener(type, () => { unlockAudio().catch(() => {}); }, true);
+unlockAudio().catch(() => {});
 
 function alertOnChanges() {
   for (const a of agents) {
     const before = prevTier.get(a.id);
     prevTier.set(a.id, a.tier);
     if (before === undefined || before === a.tier) continue;
-    if (a.tier === "urgent" && settings.urgentSound) ring();
-    if (a.tier === "review" && settings.reviewSound) ring();
+    if (a.tier === "urgent" && settings.urgentSound) ring(a.state);
+    if (a.tier === "review" && settings.reviewSound) ring(a.state);
   }
   const n = agents.filter((a) => a.tier === "urgent" && a.state !== "ended").length;
   const counted = settings.tabCount && n;
@@ -657,7 +679,7 @@ document.addEventListener("click", async (e) => {
   if (act === "settings") dlg.showModal();
   if (act === "close-settings") dlg.close();
   if (act === "dismiss-hooks") post("/api/settings/hooksDismissed/true");
-  if (act === "test-sound") { await unlockAudio(); ring(); }
+  if (act === "test-sound") { await unlockAudio(); ring(e.target.closest("[data-act]").dataset.state); }
 });
 
 // The server renders <img data-portrait="id">; the browser draws the face. Datastar morphs the

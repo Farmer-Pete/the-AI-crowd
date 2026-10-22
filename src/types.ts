@@ -32,7 +32,7 @@ export type Settings = {
   urgentSound: boolean;
   tabCount: boolean;
   reviewSound: boolean;
-  sound: "phone" | "beep";
+  sound: "office" | "beep"; // office: a different sound per state; beep: one beep for all
   muted: boolean;
   popBubbles: boolean;
   hooksDismissed: boolean;

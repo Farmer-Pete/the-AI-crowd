@@ -116,6 +116,7 @@
   dialog h3 { font-size: 12px; margin: 0 0 8px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; }
   dialog label { display: flex; gap: 8px; align-items: center; padding: 3px 0; }
   dialog label.off { color: var(--muted); }
+  dialog .tests { display: flex; gap: 6px; align-items: center; padding: 3px 0 3px 21px; color: var(--muted); }
   dialog .note { font-size: 12px; color: var(--muted); margin: 6px 0 0; }
   dialog footer { padding: 12px 18px; display: flex; justify-content: flex-end; }
 
@@ -160,16 +161,20 @@
   <section>
     <h3>Urgent (permission, question, error)</h3>
     <label><input type="checkbox" data-set="urgentSound"> Play a sound</label>
+    <div class="tests">Test:
+      <button type="button" class="iconbtn" data-act="test-sound" data-state="permission">Permission</button>
+      <button type="button" class="iconbtn" data-act="test-sound" data-state="question">Question</button>
+      <button type="button" class="iconbtn" data-act="test-sound" data-state="error">Error</button></div>
     <label><input type="checkbox" data-set="tabCount"> Count in the tab title and icon</label>
   </section>
   <section>
     <h3>Review (finished a turn)</h3>
     <label><input type="checkbox" data-set="reviewSound"> Play a sound</label>
+    <div class="tests">Test: <button type="button" class="iconbtn" data-act="test-sound" data-state="review">Finished</button></div>
   </section>
   <section>
     <h3>Sound</h3>
-    <label><select data-set="sound"><option value="phone">Red phone ring</option><option value="beep">Short beep</option></select>
-      <button type="button" class="iconbtn" data-act="test-sound">Test</button></label>
+    <label><select data-set="sound"><option value="office">Office sounds: phone for permission, ding for a question, buzzer for an error</option><option value="beep">Short beep for everything</option></select></label>
   </section>
   <section>
     <h3>Office</h3>

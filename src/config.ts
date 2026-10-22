@@ -12,7 +12,7 @@ export const DEFAULTS: Settings = {
   urgentSound: true,
   tabCount: true,
   reviewSound: false,
-  sound: "phone",
+  sound: "office",
   muted: false,
   popBubbles: true,
   hooksDismissed: false,
@@ -25,6 +25,7 @@ export function loadSettings(): Settings {
     for (const key of Object.keys(DEFAULTS) as (keyof Settings)[]) {
       if (typeof saved[key] === typeof DEFAULTS[key]) (out as any)[key] = saved[key];
     }
+    if (out.sound !== "beep") out.sound = "office"; // "phone" was the office sounds' old name
     return out;
   } catch {
     return { ...DEFAULTS };
@@ -46,6 +47,6 @@ export function applySetting(s: Settings, key: string, value: string): boolean {
     else return false;
     return true;
   }
-  if (k === "sound" && (value === "phone" || value === "beep")) { s.sound = value; return true; }
+  if (k === "sound" && (value === "office" || value === "beep")) { s.sound = value; return true; }
   return false;
 }
