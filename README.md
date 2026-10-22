@@ -40,7 +40,7 @@ For exact states (permission vs. question, API errors), install the Claude Code 
 cmux new-pane --type browser --placement dock --url http://localhost:4747
 ```
 
-In the Dock, ⌥⌘B shows or hides it, ⇧⌘E focuses it, ↑↓ pick an agent, and Enter jumps to it. Those are cmux's default keys. The Dock shows yours if you changed them.
+In the Dock, ⌥⌘B shows or hides it, and ⇧⌘E focuses it with the top agent already picked. ↑↓ pick an agent, and Enter jumps to it. Those are cmux's default keys. The Dock shows yours if you changed them.
 
 ## License
 

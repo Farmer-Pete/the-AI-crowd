@@ -33,6 +33,8 @@ function post(path) {
 // cmux's browser panes (the Dock among them) are WebKit views that expose window.webkit.messageHandlers.
 // A jump from one tells the server to release the Dock's keyboard focus.
 const IN_CMUX = !!window.webkit?.messageHandlers;
+// The cmux Dock: inside cmux and narrow. NARROW_PX is defined with the office layout below.
+const inDock = () => IN_CMUX && innerWidth < NARROW_PX;
 const jump = (id) => post(`/api/jump/${encodeURIComponent(id)}${IN_CMUX ? "?from=cmux" : ""}`);
 
 // ============================================================================
@@ -422,8 +424,7 @@ function mountOffice(host, scale) {
     const wpx = host.clientWidth || 600;
     lw = Math.floor(wpx / scale);
     const cols = Math.max(1, Math.floor((lw - PAD * 2) / CELL_W));
-    // The cmux Dock: inside cmux and narrow.
-    const list = seated(agents, IN_CMUX && wpx < NARROW_PX);
+    const list = seated(agents, inDock());
     const rows = Math.max(2, Math.ceil(list.length / cols));
     const top = wpx < NARROW_PX ? 8 : WALL_H;
     const lh = top + 8 + rows * CELL_H;
@@ -712,6 +713,21 @@ document.addEventListener("click", (e) => {
 });
 
 const office = mountOffice(document.getElementById("office"), 3);
+
+// When ⇧⌘E gives the Dock keyboard focus, pick the first desk so ↑↓ and Enter work at once.
+// When the Dock loses focus, the pick goes too: the green outline means the keys work here.
+// A click focuses the page too, so focus that arrives with a pointer press is ignored:
+// picking would scroll to the top and move the desk you were clicking.
+let pointerAt = -Infinity;
+addEventListener("pointerdown", () => { pointerAt = performance.now(); }, true);
+addEventListener("focus", () => {
+  if (!inDock()) return;
+  setTimeout(() => {
+    const first = office.deskIds()[0];
+    if (first && performance.now() - pointerAt > 400) select({ kind: "desk", id: first });
+  }, 60);
+});
+addEventListener("blur", () => { if (inDock() && picked) select(undefined); });
 
 window.crowd = {
   stream: DEMO ? "/events?demo=1" : "/events",
