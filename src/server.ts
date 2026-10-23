@@ -80,8 +80,9 @@ function frame(v: View): string {
 function broadcast() {
   const frames = new Map<View, string>();
   for (const [res, v] of clients) {
-    if (!frames.has(v)) frames.set(v, frame(v));
-    res.write(frames.get(v)!);
+    let f = frames.get(v);
+    if (f === undefined) frames.set(v, (f = frame(v)));
+    res.write(f);
   }
 }
 

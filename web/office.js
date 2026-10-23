@@ -16,9 +16,6 @@ const ghosts = new Map();   // live agents that vanished: id -> {agent, until}
 const prevTier = new Map();
 let picked;                 // the desk or list row picked with the arrow keys: { kind: "desk" | "row", id }
 
-// The detail line means different things by state, so it always carries its label.
-const DETAIL_LABEL = { working: "Now", background: "Awaits", permission: "Asks", question: "Asks", waiting: "Asks", error: "Error", review: "Result", idle: "Last", ended: "" };
-
 // /demo shows the scripted demo agents through this same page. Its stream and every action carry demo=1.
 const DEMO = location.pathname === "/demo";
 
@@ -72,7 +69,6 @@ function lookFor(id) {
     shirt: arch.outfit === "black" ? "#1a1a1a" : arch.outfit === "suit" ? "#2d3142" : pick(r, TEES),
     accent: pick(r, TEES),
     glasses: r() < arch.glasses,
-    print: pick(r, ["0101", "404", ":)", "RTFM", ">_", "∞"]),
   };
   looks.set(id, look);
   return look;
@@ -91,7 +87,7 @@ function drawPerson(c, x, y, look, pose, t) {
   if (look.outfit === "vest") { px(c, cx - 6, y + 11, 12, 11, "#e9e4d4"); px(c, cx - 5, y + 13, 10, 9, look.accent); px(c, cx - 1, y + 11, 2, 3, "#e9e4d4"); }
   if (look.outfit === "suit" || look.outfit === "blazer") { px(c, cx - 1, y + 11, 2, 11, "#ece8dc"); px(c, cx, y + 12, 1, 7, look.outfit === "suit" ? "#8b1e2b" : look.accent); }
   if (look.outfit === "cardigan") { px(c, cx - 1, y + 11, 2, 11, "#d7cfb7"); }
-  if (look.outfit === "tee") { c.fillStyle = "#ffffffcc"; c.font = "3px monospace"; px(c, cx - 3, y + 15, 6, 3, "#ffffff33"); }
+  if (look.outfit === "tee") px(c, cx - 3, y + 15, 6, 3, "#ffffff33");
   // arms
   const sleeve = look.outfit === "tee" ? look.skin : look.shirt;
   if (pose === "working") {
@@ -194,7 +190,7 @@ function seated(list, byRecent = false) {
   }
   for (let i = seatOrder.length - 1; i >= 0; i--) if (!byId.has(seatOrder[i])) seatOrder.splice(i, 1);
   const stable = seatOrder.map((id) => byId.get(id));
-  return byRecent ? stable.sort((a, b) => (b.touchedAt ?? 0) - (a.touchedAt ?? 0)) : stable;
+  return byRecent ? stable.toSorted((a, b) => (b.touchedAt ?? 0) - (a.touchedAt ?? 0)) : stable;
 }
 
 // Lays out the wall props left to right in logical pixels, for any office width.
@@ -288,7 +284,7 @@ function drawDesk(c, s, t, rowWidth = 0, glyphs = true) {
   }
   // chair
   px(c, x + 12, y + 4, 16, 18, "#2a2d35");
-  if (a.state !== "ended" && a.state !== "idle") drawPerson(c, x + 12, y + 2, lookFor(a.id), a.state === "waiting" ? "permission" : a.state === "seen" ? "review" : a.state, t);
+  if (a.state !== "ended" && a.state !== "idle") drawPerson(c, x + 12, y + 2, lookFor(a.id), a.state === "waiting" ? "permission" : a.state, t);
   // desk
   px(c, x + 2, y + 22, 48, 5, "#8a5a33"); px(c, x + 2, y + 27, 48, 2, "#6b4426");
   px(c, x + 4, y + 29, 3, 8, "#5a381f"); px(c, x + 45, y + 29, 3, 8, "#5a381f");
@@ -363,12 +359,12 @@ function wrap(c, text, maxW, maxLines = 3) {
 
 // A speech bubble above a desk, in real pixels. Urgent ones are paper white with a red edge;
 // hover ones are a green-on-black thought from the monitor.
-function speech(c, s, scale, lw, alpha = 1) {
+function speech(c, s, scale, alpha = 1) {
   const a = s.a;
   c.globalAlpha = alpha;
   const urgent = a.tier === "urgent";
   // A working agent just says what it's doing. Asks, errors, and results keep their label.
-  const label = a.state === "working" ? "" : DETAIL_LABEL[a.state];
+  const label = a.state === "working" ? "" : a.detailLabel;
   c.font = '12px "IBM Plex Mono", monospace';
   const lines = wrap(c, `${label ? label.toUpperCase() + ": " : ""}${a.detail}`, CELL_W * scale - 30, 4);
   const w = Math.max(...lines.map((l) => c.measureText(l).width)) + 18;
@@ -467,7 +463,7 @@ function mountOffice(host, scale) {
     const single = cols === 1;
     // Desks still gliding draw last, so they slide over the desks they pass.
     const moving = (s, i) => (s.x !== targets[i].x || s.y !== targets[i].y ? 1 : 0);
-    slots.map((s, i) => [s, moving(s, i)]).sort((p, q) => p[1] - q[1]).forEach(([s]) => drawDesk(c, s, t, single ? lw : 0, scale < 2));
+    slots.map((s, i) => [s, moving(s, i)]).toSorted((p, q) => p[1] - q[1]).forEach(([s]) => drawDesk(c, s, t, single ? lw : 0, scale < 2));
     // name labels in real pixels so they stay sharp
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.font = `${Math.max(8, scale * 3.6)}px "IBM Plex Mono", monospace`;
@@ -504,7 +500,7 @@ function mountOffice(host, scale) {
         .map((s) => ({ s, alpha: s.a.tier === "urgent" || s.a.id === hoverId ? 1 : popAlpha(s.a.id) }))
         .filter((b) => b.s.a.state !== "ended" && b.alpha > 0);
       show.sort((p, q) => (p.s.a.id === hoverId) - (q.s.a.id === hoverId));
-      for (const b of show) speech(c, b.s, scale, lw, b.alpha);
+      for (const b of show) speech(c, b.s, scale, b.alpha);
     }
     requestAnimationFrame(frame);
   }

@@ -52,6 +52,10 @@ const launch = (at: string, toolUseResult: object, tool_use_id = "t1") =>
   line({ type: "user", timestamp: at, toolUseResult, message: { content: [{ type: "tool_result", tool_use_id }] } });
 const notify = (id: string, status: string) =>
   line({ type: "queue-operation", operation: "enqueue", content: `<task-notification>\n<task-id>${id}</task-id>\n<status>${status}</status>\n</task-notification>` });
+const shell = (id: string, description: string, at: string) => [
+  line({ type: "assistant", message: { content: [{ type: "tool_use", id: `t-${id}`, name: "Bash", input: { command: "x", description, run_in_background: true } }] } }),
+  launch(at, { stdout: "", stderr: "", backgroundTaskId: id }, `t-${id}`),
+];
 
 test("a background agent stays open until its notification has a status", () => {
   const agent = launch("2026-10-22T10:00:00Z", { isAsync: true, status: "async_launched", agentId: "a1", description: "Review the design" });
@@ -62,7 +66,8 @@ test("a background agent stays open until its notification has a status", () => 
 test("a Monitor takes its label from the call and closes on expiry or TaskStop", () => {
   const call = line({ type: "assistant", message: { content: [{ type: "tool_use", id: "t9", name: "Monitor", input: { description: "CI on PR #212" } }] } });
   const started = launch("2026-10-22T10:00:00Z", { taskId: "m1", timeoutMs: 60_000, persistent: false }, "t9");
-  const [task] = parseTail([call, started].join("\n")).tasks!;
+  const [task] = parseTail([call, started].join("\n")).tasks ?? [];
+  assert.ok(task);
   assert.equal(task.label, "CI on PR #212");
   assert.equal(task.expiresAt, Date.parse("2026-10-22T10:01:00Z"));
   const event = line({ type: "queue-operation", operation: "enqueue", content: "<task-notification>\n<task-id>m1</task-id>\n<event>PR approved</event>\n</task-notification>" });
@@ -82,10 +87,6 @@ test("workflows count; background shells don't", () => {
 });
 
 test("a background shell counts only when its description says it waits", () => {
-  const shell = (id: string, description: string, at: string) => [
-    line({ type: "assistant", message: { content: [{ type: "tool_use", id: `t-${id}`, name: "Bash", input: { command: "x", description, run_in_background: true } }] } }),
-    launch(at, { stdout: "", stderr: "", backgroundTaskId: id }, `t-${id}`),
-  ];
   const tail = [
     ...shell("b1", "Watch the OD1 build until it finishes", "2026-10-22T10:00:00Z"),
     ...shell("b2", "Start the dev server", "2026-10-22T10:00:01Z"),

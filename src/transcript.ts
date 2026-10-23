@@ -8,7 +8,12 @@ import { join, relative, isAbsolute } from "node:path";
 const PROJECTS_DIR = join(homedir(), ".claude", "projects");
 const TAIL_BYTES = 512 * 1024;
 
-export type ToolUse = { id: string; name: string; input: Record<string, any>; pending: boolean };
+// A JSON object from the transcript. The format is undocumented, so every field is unknown until checked.
+export type Rec = Record<string, unknown>;
+const obj = (v: unknown): Rec => (v && typeof v === "object" && !Array.isArray(v) ? (v as Rec) : {});
+const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+type ToolUse = { id: string; name: string; input: Rec; pending: boolean };
 // A background task the session will hear back from: a helper agent, a workflow, a Monitor, or a shell
 // that waits on something. Other background shells are left out: a dev server and a build watcher
 // look the same, except that Claude describes a watcher as "Wait…", "Watch…", or "Poll…".
@@ -41,32 +46,35 @@ export async function readTranscript(path: string): Promise<Transcript> {
 }
 
 export function parseTail(text: string): Transcript {
-  const recs: any[] = [];
+  const recs: Rec[] = [];
   for (const line of text.split("\n")) {
     if (!line.startsWith("{")) continue;
-    try { recs.push(JSON.parse(line)); } catch { /* partial first line */ }
+    try { recs.push(obj(JSON.parse(line))); } catch { /* partial first line */ }
   }
   return { ...latest(recs), tasks: openTasks(recs) };
 }
 
-const contentOf = (rec: any): any[] => (Array.isArray(rec.message?.content) ? rec.message.content : []);
+const contentOf = (rec: Rec): Rec[] => {
+  const content = obj(rec.message).content;
+  return Array.isArray(content) ? content.map(obj) : [];
+};
+const timeOf = (rec: Rec) => Date.parse(str(rec.timestamp) ?? "");
 
 // Walks the records newest first. A tool call is pending when no tool_result for it came after.
-function latest(recs: any[]): Transcript {
+function latest(recs: Rec[]): Transcript {
   const out: Transcript = { title: "", lastText: "" };
-  const answered = new Set<string>();
-  for (let i = recs.length - 1; i >= 0; i--) {
+  const answered = new Set<unknown>();
+  for (const rec of recs.toReversed()) {
     if (out.title && out.tool && out.lastText && out.promptAt) break;
-    const rec = recs[i];
-    if (!out.title && rec.type === "ai-title") out.title = rec.aiTitle ?? "";
+    if (!out.title && rec.type === "ai-title") out.title = str(rec.aiTitle) ?? "";
     const content = contentOf(rec);
     if (rec.type === "user") for (const c of content) if (c.type === "tool_result") answered.add(c.tool_use_id);
-    if (!out.promptAt && rec.type === "user" && rec.origin?.kind === "human" && rec.timestamp) out.promptAt = Date.parse(rec.timestamp) || undefined;
+    if (!out.promptAt && rec.type === "user" && obj(rec.origin).kind === "human") out.promptAt = timeOf(rec) || undefined;
     if (rec.type === "assistant") {
-      const use = [...content].reverse().find((c) => c.type === "tool_use");
-      if (!out.tool && use) out.tool = { id: use.id, name: use.name, input: use.input ?? {}, pending: !answered.has(use.id) };
-      const said = content.find((c) => c.type === "text" && c.text.trim());
-      if (!out.lastText && said) out.lastText = said.text;
+      const use = content.findLast((c) => c.type === "tool_use");
+      if (!out.tool && use) out.tool = { id: str(use.id) ?? "", name: str(use.name) ?? "", input: obj(use.input), pending: !answered.has(use.id) };
+      const said = content.map((c) => (c.type === "text" ? str(c.text) : undefined)).find((t) => t?.trim());
+      if (!out.lastText && said) out.lastText = said;
     }
   }
   return out;
@@ -75,38 +83,38 @@ function latest(recs: any[]): Transcript {
 // Walks the records oldest first. Claude Code records each launch in the tool result's toolUseResult,
 // and says a task ended with a <task-notification> that carries a <status> (a Monitor's last one
 // says it expired instead), or with a TaskStop result.
-function openTasks(recs: any[]): Task[] {
-  const open = new Map<string, Task>();
-  const inputs = new Map<string, Record<string, any>>(); // tool_use id -> input, for a description
-  const inputOf = (rec: any) => inputs.get(contentOf(rec).find((c) => c.type === "tool_result")?.tool_use_id) ?? {};
+function openTasks(recs: Rec[]): Task[] {
+  const running = new Map<string, Task>();
+  const inputs = new Map<unknown, Rec>(); // tool_use id -> input, for a description
+  const inputOf = (rec: Rec) => inputs.get(contentOf(rec).find((c) => c.type === "tool_result")?.tool_use_id) ?? {};
   for (const rec of recs) {
-    const at = Date.parse(rec.timestamp) || 0;
-    if (rec.type === "assistant") for (const c of contentOf(rec)) if (c.type === "tool_use") inputs.set(c.id, c.input ?? {});
-    const r = rec.type === "user" ? rec.toolUseResult : undefined;
-    if (r && typeof r === "object") {
+    const at = timeOf(rec) || 0;
+    if (rec.type === "assistant") for (const c of contentOf(rec)) if (c.type === "tool_use") inputs.set(c.id, obj(c.input));
+    if (rec.type === "user") {
+      const r = obj(rec.toolUseResult);
       if (r.status === "async_launched" && typeof r.agentId === "string") {
-        open.set(r.agentId, { id: r.agentId, kind: "agent", label: String(r.description || "a helper"), at });
+        running.set(r.agentId, { id: r.agentId, kind: "agent", label: String(r.description || "a helper"), at });
       } else if (r.status === "async_launched" && r.taskType === "local_workflow" && typeof r.taskId === "string") {
-        open.set(r.taskId, { id: r.taskId, kind: "workflow", label: String(r.workflowName || "a workflow"), at });
+        running.set(r.taskId, { id: r.taskId, kind: "workflow", label: String(r.workflowName || "a workflow"), at });
       } else if (typeof r.taskId === "string" && typeof r.timeoutMs === "number") {
         const input = inputOf(rec);
-        open.set(r.taskId, { id: r.taskId, kind: "monitor", label: String(input.description || "a Monitor"), at, expiresAt: at + r.timeoutMs, persistent: r.persistent === true });
+        running.set(r.taskId, { id: r.taskId, kind: "monitor", label: String(input.description || "a Monitor"), at, expiresAt: at + r.timeoutMs, persistent: r.persistent === true });
       } else if (typeof r.backgroundTaskId === "string" && WAITS.test(String(inputOf(rec).description ?? ""))) {
-        open.set(r.backgroundTaskId, { id: r.backgroundTaskId, kind: "shell", label: String(inputOf(rec).description), at });
+        running.set(r.backgroundTaskId, { id: r.backgroundTaskId, kind: "shell", label: String(inputOf(rec).description), at });
       }
-      if (typeof r.task_id === "string") open.delete(r.task_id); // TaskStop
+      if (typeof r.task_id === "string") running.delete(r.task_id); // TaskStop
     }
     for (const note of notifications(rec)) {
       const id = note.match(/<task-id>(\w+)<\/task-id>/)?.[1];
-      if (id && (/<status>\w+<\/status>/.test(note) || note.includes("[Monitor expired"))) open.delete(id);
+      if (id && (/<status>\w+<\/status>/.test(note) || note.includes("[Monitor expired"))) running.delete(id);
     }
   }
-  return [...open.values()];
+  return [...running.values()];
 }
 
 // A notification is queued (a queue-operation), then delivered as a queued command or a user message.
-function notifications(rec: any): string[] {
-  const texts = [rec.type === "queue-operation" ? rec.content : undefined, rec.attachment?.prompt, rec.type === "user" ? rec.message?.content : undefined];
+function notifications(rec: Rec): string[] {
+  const texts = [rec.type === "queue-operation" ? rec.content : undefined, obj(rec.attachment).prompt, rec.type === "user" ? obj(rec.message).content : undefined];
   return texts.filter((t): t is string => typeof t === "string" && t.includes("<task-notification>"));
 }
 
@@ -119,8 +127,7 @@ function shortPath(p: unknown, cwd: string): string {
 }
 
 // Turns a tool call into a short phrase: "Editing src/auth.ts", "Running the tests".
-export function describeTool(name: string, input: Record<string, any>, cwd: string): string {
-  const i = input ?? {};
+export function describeTool(name: string, i: Rec, cwd: string): string {
   switch (name) {
     case "Bash": return i.description ? short(String(i.description)) : `Running ${short(String(i.command ?? ""), 60)}`;
     case "Edit": case "MultiEdit": return `Editing ${shortPath(i.file_path, cwd)}`;
@@ -129,12 +136,15 @@ export function describeTool(name: string, input: Record<string, any>, cwd: stri
     case "Grep": return `Searching for "${short(String(i.pattern ?? ""), 40)}"`;
     case "Glob": return `Finding files ${short(String(i.pattern ?? ""), 40)}`;
     case "Agent": case "Task": return `Delegating: ${short(String(i.description ?? i.subagent_type ?? "a subtask"), 60)}`;
-    case "Skill": return `Running the ${i.skill} skill`;
+    case "Skill": return `Running the ${String(i.skill)} skill`;
     case "WebFetch": return `Fetching ${short(String(i.url ?? ""), 60)}`;
-    case "AskUserQuestion": return short(String(i.questions?.[0]?.question ?? "Asking you a question"));
+    case "AskUserQuestion": {
+      const question = Array.isArray(i.questions) ? str(obj(i.questions[0]).question) : undefined;
+      return short(question ?? "Asking you a question");
+    }
   }
-  const mcp = name.match(/^mcp__(.+?)__(.+)$/);
-  if (mcp) return `Using ${mcp[2].replace(/_/g, " ")} (${mcp[1].replace(/^claude_ai_/, "")})`;
+  const [, server, tool] = name.match(/^mcp__(.+?)__(.+)$/) ?? [];
+  if (server && tool) return `Using ${tool.replace(/_/g, " ")} (${server.replace(/^claude_ai_/, "")})`;
   return `Using ${name}`;
 }
 

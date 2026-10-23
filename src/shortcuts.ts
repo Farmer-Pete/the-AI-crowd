@@ -16,7 +16,7 @@ const CMUX_JSON = join(homedir(), ".config", "cmux", "cmux.json");
 const DEFAULTS_DOMAIN = "com.cmuxterm.app";
 
 // Show or hide the right sidebar (where the Dock lives), and move keyboard focus into it.
-export const ACTIONS = { toggle: "toggleFileExplorer", focus: "focusRightSidebar" } as const;
+const ACTIONS = { toggle: "toggleFileExplorer", focus: "focusRightSidebar" } as const;
 const BUILT_IN: Record<string, string> = { toggleFileExplorer: "⌥⌘B", focusRightSidebar: "⇧⌘E" };
 
 export type Shortcuts = { toggle: string | null; focus: string | null };
@@ -71,21 +71,22 @@ export function formatBinding(b: unknown): string | null {
 type Stored = { key?: string; command?: boolean; shift?: boolean; option?: boolean; control?: boolean;
   chordKey?: string | null; chordCommand?: boolean; chordShift?: boolean; chordOption?: boolean; chordControl?: boolean };
 
+const keys = (key: string | null | undefined, ctrl?: boolean, opt?: boolean, shift?: boolean, cmd?: boolean) =>
+  key ? `${ctrl ? "⌃" : ""}${opt ? "⌥" : ""}${shift ? "⇧" : ""}${cmd ? "⌘" : ""}${keyName(key)}` : null;
+
 // A shortcut saved in cmux Settings. An empty key means the user unbound it.
 export function formatStored(s: Stored): string | null {
-  const one = (key: string | null | undefined, ctrl?: boolean, opt?: boolean, shift?: boolean, cmd?: boolean) =>
-    key ? `${ctrl ? "⌃" : ""}${opt ? "⌥" : ""}${shift ? "⇧" : ""}${cmd ? "⌘" : ""}${keyName(key)}` : null;
-  const first = one(s.key, s.control, s.option, s.shift, s.command);
+  const first = keys(s.key, s.control, s.option, s.shift, s.command);
   if (!first) return null;
-  const chord = one(s.chordKey, s.chordControl, s.chordOption, s.chordShift, s.chordCommand);
+  const chord = keys(s.chordKey, s.chordControl, s.chordOption, s.chordShift, s.chordCommand);
   return chord ? `${first} then ${chord}` : first;
 }
 
 // Pulls one saved shortcut out of `defaults export` XML: <key>shortcut.X</key><data>base64</data>.
-export function storedFromPlist(xml: string, action: string): Stored | undefined {
-  const m = xml.match(new RegExp(`<key>shortcut\\.${action}</key>\\s*<data>([\\s\\S]*?)</data>`));
-  if (!m) return undefined;
-  try { return JSON.parse(Buffer.from(m[1].replace(/\s+/g, ""), "base64").toString("utf8")); } catch { return undefined; }
+function storedFromPlist(xml: string, action: string): Stored | undefined {
+  const data = xml.match(new RegExp(`<key>shortcut\\.${action}</key>\\s*<data>([\\s\\S]*?)</data>`))?.[1];
+  if (data === undefined) return undefined;
+  try { return JSON.parse(Buffer.from(data.replace(/\s+/g, ""), "base64").toString("utf8")); } catch { return undefined; }
 }
 
 export function resolve(action: string, fileBindings: Record<string, unknown>, plistXml: string): string | null {

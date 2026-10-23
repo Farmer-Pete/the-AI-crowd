@@ -5,7 +5,7 @@
 import { basename } from "node:path";
 import { homedir } from "node:os";
 import type { Agent, State, Tier, ViewAgent } from "./types.ts";
-import { describeTool, firstLine, short, type Task, type Transcript } from "./transcript.ts";
+import { describeTool, firstLine, short, type Rec, type Task, type Transcript } from "./transcript.ts";
 import type { RegistryEntry } from "./registry.ts";
 import type { PaneInfo } from "./cmux.ts";
 
@@ -22,7 +22,7 @@ export type HookEvent = {
   cwd?: string;
   transcript_path?: string;
   tool_name?: string;
-  tool_input?: Record<string, any>;
+  tool_input?: Rec;
   notification_type?: string;
   message?: string;
   last_assistant_message?: string;
@@ -36,7 +36,6 @@ export type Pane = { surface?: string; workspace?: string };
 
 type Session = Agent & {
   cwdAbs: string;
-  pid?: number;
   hooked: boolean;
   lastHookAt: number;
   pane: Pane;
@@ -50,6 +49,10 @@ const TIER_ORDER: Record<Tier, number> = { urgent: 0, review: 1, quiet: 2 };
 const LABEL: Record<State, string> = {
   working: "Working", background: "Waiting on helpers", permission: "Needs permission", question: "Asked you", error: "Errored",
   waiting: "Needs you", review: "Finished", idle: "Asleep", ended: "Left",
+};
+// The tag in front of the detail line, since the line means something different in each state.
+const DETAIL_LABEL: Record<State, string> = {
+  working: "Now", background: "Awaits", permission: "Asks", question: "Asks", waiting: "Asks", error: "Error", review: "Result", idle: "Last", ended: "",
 };
 
 const tilde = (p: string) => p.replace(homedir(), "~");
@@ -128,7 +131,6 @@ export function createStore(clock: () => number = Date.now) {
     const ids = new Set(entries.map((e) => e.reg.sessionId));
     for (const { reg, tr, pane } of entries) {
       const s = session(reg.sessionId, reg.cwd);
-      s.pid = reg.pid;
       s.cwdAbs = reg.cwd;
       s.cwd = tilde(reg.cwd);
       s.project = basename(reg.cwd);
@@ -145,20 +147,21 @@ export function createStore(clock: () => number = Date.now) {
 
   function decorate(a: Agent): ViewAgent {
     const mark = seen.get(a.id);
-    const seenIt = a.state === "review" && mark?.since === a.since;
+    const seenAt = a.state === "review" && mark?.since === a.since ? mark.at : undefined;
+    const seenIt = seenAt !== undefined;
     const asleep = seenIt
-      ? clock() - mark!.at >= ASLEEP_AFTER_MS
+      ? clock() - seenAt >= ASLEEP_AFTER_MS
       : a.state === "review" && a.source === "live" && clock() - a.since >= UNSEEN_ASLEEP_AFTER_MS;
     const state: State = asleep ? "idle" : a.state;
     const tier: Tier = URGENT.has(state) ? "urgent" : state === "review" && !seenIt ? "review" : "quiet";
     const label = state === "review" && seenIt ? "Seen" : LABEL[state];
     const touchedAt = Math.max(touched.get(a.id) ?? 0, a.touchedAt ?? 0) || undefined;
-    return { ...a, state, tier, label, touchedAt };
+    return { ...a, state, tier, label, detailLabel: DETAIL_LABEL[state], touchedAt };
   }
 
   // Everyone, urgent first, then longest waiting first.
   function view(demo: Agent[] = []): ViewAgent[] {
-    const live: Agent[] = [...sessions.values()].map(({ cwdAbs, pid, hooked, lastHookAt, pane, target, helperTypes, awaiting, ...a }) => {
+    const live: Agent[] = [...sessions.values()].map(({ cwdAbs, hooked, lastHookAt, pane, target, helperTypes, awaiting, ...a }) => {
       const title = a.title || a.project;
       // A finished turn with tasks still out waits on them, not on you.
       if (a.state === "review" && awaiting.length) {
@@ -169,7 +172,7 @@ export function createStore(clock: () => number = Date.now) {
     });
     const all = [...demo, ...live];
     for (const marks of [seen, touched]) for (const id of marks.keys()) if (!all.some((a) => a.id === id)) marks.delete(id);
-    return all.map(decorate).sort((x, y) => TIER_ORDER[x.tier] - TIER_ORDER[y.tier] || x.since - y.since);
+    return all.map(decorate).toSorted((x, y) => TIER_ORDER[x.tier] - TIER_ORDER[y.tier] || x.since - y.since);
   }
 
   // Looking at a Finished agent moves it out of Review.
@@ -182,7 +185,7 @@ export function createStore(clock: () => number = Date.now) {
 
   const where = (id: string) => {
     const s = sessions.get(id);
-    return s && { pid: s.pid, pane: s.pane, target: s.target };
+    return s && { pane: s.pane, target: s.target };
   };
 
   return { applyHook, applyRegistry, view, markSeen, touch, where, hooksSeen: () => hooksSeen };

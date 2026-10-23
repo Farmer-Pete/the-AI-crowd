@@ -173,7 +173,7 @@ test("demo agents never doze off on their own", () => {
   const store = createStore(() => now);
   const demo = { id: "d", source: "demo" as const, title: "Demo", project: "demo", cwd: "~", state: "review" as const, since: 0, detail: "", helpers: [] };
   now = 10 * UNSEEN_ASLEEP_AFTER_MS;
-  assert.equal(store.view([demo])[0].state, "review");
+  assert.equal(store.view([demo])[0]?.state, "review");
 });
 
 test("a registry status of shell means the turn finished: a background shell may be a server", () => {
@@ -243,8 +243,8 @@ test("demo agents can be touched too", () => {
   let now = 0;
   const store = createStore(() => now);
   const demo = { id: "d", source: "demo" as const, title: "Demo", project: "demo", cwd: "~", state: "working" as const, since: 0, detail: "", helpers: [] };
-  assert.equal(store.view([demo])[0].touchedAt, undefined);
+  assert.equal(store.view([demo])[0]?.touchedAt, undefined);
   now = 42;
   store.touch("d");
-  assert.equal(store.view([demo])[0].touchedAt, 42);
+  assert.equal(store.view([demo])[0]?.touchedAt, 42);
 });

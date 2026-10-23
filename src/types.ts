@@ -2,7 +2,7 @@
 export type State = "working" | "background" | "permission" | "question" | "error" | "review" | "idle" | "waiting" | "ended";
 export type Tier = "urgent" | "review" | "quiet";
 
-export type Helper = { id: string; label: string };
+type Helper = { id: string; label: string };
 
 // Two levels of "what is it doing": `title` is what the whole session is about,
 // `detail` is the one line for right now. Its meaning follows the state:
@@ -26,7 +26,8 @@ export type Agent = {
 };
 
 // What the page gets: the agent plus what the server worked out about attention.
-export type ViewAgent = Agent & { tier: Tier; label: string };
+// label names the state ("Needs permission"); detailLabel tags the detail line ("Asks").
+export type ViewAgent = Agent & { tier: Tier; label: string; detailLabel: string };
 
 export type Settings = {
   urgentSound: boolean;

@@ -4,19 +4,17 @@
 
 import type { Settings, ViewAgent } from "./types.ts";
 
-const DETAIL_LABEL: Record<string, string> = {
-  working: "Now", background: "Awaits", permission: "Asks", question: "Asks", waiting: "Asks", error: "Error", review: "Result", idle: "Last", ended: "",
-};
 const TIER_HEADING = { urgent: "NEEDS YOU", review: "TO REVIEW", quiet: "FINE" };
 const SAFE_ID = /^[\w.-]{1,100}$/;
+const ENTITIES: Record<string, string> = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 
 export function esc(s: unknown): string {
   return String(s ?? "")
     .replace(/[\u0000-\u001f\u007f]/g, " ")
-    .replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
+    .replace(/[&<>"']/g, (c) => ENTITIES[c] ?? c);
 }
 
-export function ago(since: number, now: number): string {
+function ago(since: number, now: number): string {
   const s = Math.max(0, Math.floor((now - since) / 1000));
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -28,8 +26,7 @@ export function ago(since: number, now: number): string {
 const jumpAttr = (id: string) => (SAFE_ID.test(id) ? ` data-id="${id}"` : "");
 
 function row(a: ViewAgent, now: number): string {
-  const label = DETAIL_LABEL[a.state];
-  const detail = `${label ? `<span class="dl ${a.tier}">${label}</span>` : ""}${esc(a.detail)}`;
+  const detail = `${a.detailLabel ? `<span class="dl ${a.tier}">${a.detailLabel}</span>` : ""}${esc(a.detail)}`;
   const helpers = a.helpers.map((h) => `<tr class="helper"><td colspan="4">↳ helper: ${esc(h.label)}</td></tr>`).join("");
   return `<tr class="row"${jumpAttr(a.id)}>` +
     `<td><div class="who"><img class="portrait" data-portrait="${esc(a.id)}" alt=""><div>` +

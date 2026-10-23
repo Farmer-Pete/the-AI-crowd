@@ -8,7 +8,7 @@ import type { Agent, State } from "./types.ts";
 type Segment = { state: State; secs: number; detail: string; padMin?: number; helpers?: string[] };
 // cast picks the character: the session id seeds the look. The seeds give the demo a cast spread
 // evenly across skin tones and archetypes (found by trying seeds against lookFor in web/office.js).
-type Script = { project: string; title: string; cwd: string; offset: number; cast: number; segments: Segment[] };
+type Script = { project: string; title: string; cwd: string; offset: number; cast: number; segments: [Segment, ...Segment[]] };
 
 // The first two desks stay quiet (one line each, never changing) so a screenshot shows their faces.
 const SCRIPTS: Script[] = [

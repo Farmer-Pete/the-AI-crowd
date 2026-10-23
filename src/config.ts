@@ -20,10 +20,10 @@ export const DEFAULTS: Settings = {
 
 export function loadSettings(): Settings {
   try {
-    const saved = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
+    const saved: Record<string, unknown> = JSON.parse(readFileSync(CONFIG_PATH, "utf8"));
     const out: Settings = { ...DEFAULTS };
     for (const key of Object.keys(DEFAULTS) as (keyof Settings)[]) {
-      if (typeof saved[key] === typeof DEFAULTS[key]) (out as any)[key] = saved[key];
+      if (typeof saved[key] === typeof DEFAULTS[key]) Object.assign(out, { [key]: saved[key] });
     }
     if (out.sound !== "beep") out.sound = "office"; // "phone" was the office sounds' old name
     return out;
@@ -37,16 +37,18 @@ export async function saveSettings(s: Settings) {
   await writeFile(CONFIG_PATH, JSON.stringify(s, null, 2) + "\n");
 }
 
+// The settings that are on or off.
+type Flag = { [K in keyof Settings]: Settings[K] extends boolean ? K : never }[keyof Settings];
+const isFlag = (key: string): key is Flag => Object.hasOwn(DEFAULTS, key) && typeof DEFAULTS[key as keyof Settings] === "boolean";
+
 // Applies one change from the page: "toggle", "true", "false", or a sound name. Returns false if invalid.
 export function applySetting(s: Settings, key: string, value: string): boolean {
-  if (!(key in DEFAULTS)) return false;
-  const k = key as keyof Settings;
-  if (typeof DEFAULTS[k] === "boolean") {
-    if (value === "toggle") (s as any)[k] = !s[k];
-    else if (value === "true" || value === "false") (s as any)[k] = value === "true";
+  if (isFlag(key)) {
+    if (value === "toggle") s[key] = !s[key];
+    else if (value === "true" || value === "false") s[key] = value === "true";
     else return false;
     return true;
   }
-  if (k === "sound" && (value === "office" || value === "beep")) { s.sound = value; return true; }
+  if (key === "sound" && (value === "office" || value === "beep")) { s.sound = value; return true; }
   return false;
 }

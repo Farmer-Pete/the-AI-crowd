@@ -5,7 +5,7 @@ import type { ViewAgent } from "./types.ts";
 
 const agent = (over: Partial<ViewAgent> = {}): ViewAgent => ({
   id: "s1", source: "live", title: "Retry backoff", project: "api", cwd: "~/api", state: "working",
-  since: 0, detail: "Editing src/a.ts", helpers: [], tier: "quiet", label: "Working", ...over,
+  since: 0, detail: "Editing src/a.ts", helpers: [], tier: "quiet", label: "Working", detailLabel: "Now", ...over,
 });
 
 test("esc neutralises markup, quotes, and control characters", () => {
