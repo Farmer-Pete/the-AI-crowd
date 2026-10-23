@@ -5,9 +5,9 @@
   "description": "An IT Crowd-themed dashboard of every Claude Code session on your machine.",
   "license": "MIT",
   "scripts": {
-    "start": "node src/server.ts",
+    "start": "node --disable-warning=ExperimentalWarning src/server.ts",
     "test": "node --test",
-    "check": "tsc && oxlint --deny-warnings && knip && jscpd --exit-code --reporters console src web && sh scripts/no-suppressions.sh && node --test"
+    "check": "tsc && tsc -p web && oxlint --deny-warnings && knip && jscpd --exit-code --reporters console src web && sh scripts/no-suppressions.sh && node --test"
   },
   "engines": {
     "node": ">=26"

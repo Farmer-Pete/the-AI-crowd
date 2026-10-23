@@ -1,50 +1,74 @@
 // The AI Crowd page: the office canvas, sounds, and everything that runs in the browser.
 // The server streams state over SSE. Datastar patches the list and header into the DOM,
 // and hands the _state and _toast signals to window.crowd.patched().
+// The server strips this file's types and serves it as /office.js.
+
+import type { PageState, Settings, Shortcuts, State, Tier, ViewAgent } from "../src/types.ts";
 
 // ============================================================================
 // State from the server
 // ============================================================================
 
-let settings = { muted: false, popBubbles: true, sound: "office", urgentSound: true, reviewSound: false, tabCount: true, hooksDismissed: false };
-let agents = [];            // latest from the server, plus ghosts of sessions that just left
-let hooks = false;          // has the plugin sent any hook event?
-const lastSaid = new Map(); // id -> "state|detail" from the previous update
-const pops = new Map();     // id -> when its line last changed, for pop-up bubbles
+let settings: Settings = { muted: false, popBubbles: true, sound: "office", urgentSound: true, reviewSound: false, tabCount: true, hooksDismissed: false };
+let agents: ViewAgent[] = [];               // latest from the server, plus ghosts of sessions that just left
+let hooks = false;                          // has the plugin sent any hook event?
+const lastSaid = new Map<string, string>(); // id -> "state|detail" from the previous update
+const pops = new Map<string, number>();     // id -> when its line last changed, for pop-up bubbles
 const POP_MS = 6000;
-const ghosts = new Map();   // live agents that vanished: id -> {agent, until}
-const prevTier = new Map();
-let picked;                 // the desk or list row picked with the arrow keys: { kind: "desk" | "row", id }
+const ghosts = new Map<string, { agent: ViewAgent; until: number }>(); // live agents that vanished
+const prevTier = new Map<string, Tier>();
+type Pick = { kind: "desk" | "row"; id: string };
+let picked: Pick | undefined;               // the desk or list row picked with the arrow keys
 
 // /demo shows the scripted demo agents through this same page. Its stream and every action carry demo=1.
 const DEMO = location.pathname === "/demo";
 
+// The page's fixed elements. A missing one is a broken page, so fail loudly.
+function byId<T extends HTMLElement = HTMLElement>(id: string): T {
+  const el = document.getElementById(id);
+  if (!el) throw new Error(`#${id} is missing from the page`);
+  return el as T;
+}
+
+function context2d(canvas: HTMLCanvasElement): CanvasRenderingContext2D {
+  const c = canvas.getContext("2d");
+  if (!c) throw new Error("no 2d canvas");
+  return c;
+}
+
+const targetElement = (e: Event) => (e.target instanceof Element ? e.target : null);
+
 // Every action goes through Datastar's @post on the hidden #actions element.
-function post(path) {
+function post(path: string) {
   const url = new URL(path, location.origin);
   if (DEMO) url.searchParams.set("demo", "1");
-  document.getElementById("actions").dispatchEvent(new CustomEvent("crowd-post", { detail: url.pathname + url.search }));
+  byId("actions").dispatchEvent(new CustomEvent("crowd-post", { detail: url.pathname + url.search }));
 }
 
 // cmux's browser panes (the Dock among them) are WebKit views that expose window.webkit.messageHandlers.
 // A jump from one tells the server to release the Dock's keyboard focus.
-const IN_CMUX = !!window.webkit?.messageHandlers;
+const IN_CMUX = Boolean((window as { webkit?: { messageHandlers?: unknown } }).webkit?.messageHandlers);
 // The cmux Dock: inside cmux and narrow. NARROW_PX is defined with the office layout below.
 const inDock = () => IN_CMUX && innerWidth < NARROW_PX;
-const jump = (id) => post(`/api/jump/${encodeURIComponent(id)}${IN_CMUX ? "?from=cmux" : ""}`);
+const jump = (id: string) => post(`/api/jump/${encodeURIComponent(id)}${IN_CMUX ? "?from=cmux" : ""}`);
 
 // ============================================================================
 // Characters: seeded from the session id, drawn in code at 32x32-ish
 // ============================================================================
 
-function hash(str) { let h = 2166136261; for (const c of str) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
-function rng(seed) { return () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
-const pick = (r, arr) => arr[Math.floor(r() * arr.length)];
+function hash(str: string) { let h = 2166136261; for (const c of str) { h ^= c.charCodeAt(0); h = Math.imul(h, 16777619); } return h >>> 0; }
+function rng(seed: number) { return () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const pick = <T,>(r: () => number, arr: readonly [T, ...T[]]): T => arr[Math.floor(r() * arr.length)] ?? arr[0];
 
 // Archetypes nod to the show's basement and upstairs crowd without copying anyone.
 // An archetype sets only hair, clothes, and glasses. Skin and hair color are random for every
 // archetype, so no role is tied to a skin tone.
-const ARCHETYPES = [
+type Archetype = {
+  hair: "curls" | "part" | "bob" | "goth" | "slick" | "receding";
+  outfit: "tee" | "vest" | "blazer" | "black" | "suit" | "cardigan";
+  glasses: number; // the chance of glasses
+};
+const ARCHETYPES: [Archetype, ...Archetype[]] = [
   { hair: "curls",   outfit: "tee",      glasses: 0.2 },  // the night owl
   { hair: "part",    outfit: "vest",     glasses: 0.95 }, // the genius
   { hair: "bob",     outfit: "blazer",   glasses: 0.1 },  // the manager
@@ -53,13 +77,15 @@ const ARCHETYPES = [
   { hair: "receding",outfit: "cardigan", glasses: 0.6 },  // the old hand
 ];
 // Six skin tones spaced evenly from light to deep.
-const SKIN = ["#f6dcc7", "#e8bd98", "#d39e74", "#b07a50", "#8a5636", "#5e3a24"];
-const HAIR = ["#2a1b10", "#4a2e19", "#6b4423", "#b5651d", "#d8b25a", "#111111", "#7a7a7a"];
-const TEES = ["#c0392b", "#2c7fb8", "#3a8c4e", "#8e44ad", "#d35400", "#34495e", "#b03a6f"];
+const SKIN = ["#f6dcc7", "#e8bd98", "#d39e74", "#b07a50", "#8a5636", "#5e3a24"] as const;
+const HAIR = ["#2a1b10", "#4a2e19", "#6b4423", "#b5651d", "#d8b25a", "#111111", "#7a7a7a"] as const;
+const TEES = ["#c0392b", "#2c7fb8", "#3a8c4e", "#8e44ad", "#d35400", "#34495e", "#b03a6f"] as const;
 
-const looks = new Map();
-function lookFor(id) {
-  if (looks.has(id)) return looks.get(id);
+type Look = Omit<Archetype, "glasses"> & { glasses: boolean; skin: string; hairColor: string; shirt: string; accent: string };
+const looks = new Map<string, Look>();
+function lookFor(id: string): Look {
+  const known = looks.get(id);
+  if (known) return known;
   const r = rng(hash(id));
   const arch = pick(r, ARCHETYPES);
   const look = {
@@ -74,14 +100,20 @@ function lookFor(id) {
   return look;
 }
 
+type Ctx = CanvasRenderingContext2D;
+
 // px(ctx, x, y, w, h, color): one logical pixel block
-function px(c, x, y, w, h, col) { c.fillStyle = col; c.fillRect(x, y, w, h); }
+function px(c: Ctx, x: number, y: number, w: number, h: number, col: string) { c.fillStyle = col; c.fillRect(x, y, w, h); }
+
+// How a person sits: their state, or "still" for a list portrait. Asleep and gone desks have
+// nobody in the chair, and a "waiting" session is drawn as a permission ask.
+type Pose = Exclude<State, "idle" | "ended" | "waiting"> | "still";
 
 // Draws a seated person, head top-left at (x, y), 16 wide. pose picks arms and head.
-function drawPerson(c, x, y, look, pose, t) {
+function drawPerson(c: Ctx, x: number, y: number, look: Look, pose: Pose, t: number) {
   const cx = x + 8;
   const bob = pose === "working" ? (Math.floor(t * 4) % 2) : 0;
-  const headY = pose === "idle" ? y + 9 : pose === "review" ? y - 1 : y;
+  const headY = pose === "review" ? y - 1 : y;
   // torso
   px(c, cx - 6, y + 11, 12, 11, look.shirt);
   if (look.outfit === "vest") { px(c, cx - 6, y + 11, 12, 11, "#e9e4d4"); px(c, cx - 5, y + 13, 10, 9, look.accent); px(c, cx - 1, y + 11, 2, 3, "#e9e4d4"); }
@@ -100,8 +132,6 @@ function drawPerson(c, x, y, look, pose, t) {
     px(c, cx - 8, y - 6, 2, 2, look.skin); px(c, cx + 6, y - 6, 2, 2, look.skin);
   } else if (pose === "permission") {
     px(c, cx - 8, y + 12, 2, 9, sleeve); px(c, cx + 6, y + 4, 2, 8, sleeve); px(c, cx + 5, y + 3, 3, 3, look.skin);
-  } else if (pose === "idle") {
-    px(c, cx - 8, y + 17, 16, 3, sleeve);
   } else if (pose === "background") {
     // arms folded across the chest
     px(c, cx - 8, y + 12, 2, 6, sleeve); px(c, cx + 6, y + 12, 2, 6, sleeve);
@@ -121,12 +151,11 @@ function drawPerson(c, x, y, look, pose, t) {
     case "slick": px(c, cx - 5, headY - 1, 10, 3, h); px(c, cx + 3, headY + 2, 2, 2, h); break;
     case "receding": px(c, cx - 5, headY + 2, 2, 4, h); px(c, cx + 3, headY + 2, 2, 4, h); break;
   }
-  if (pose === "idle") return; // face down on the desk
   // face
   const eyeY = headY + 5;
-  const look2 = pose === "permission" ? -1 : pose === "background" ? 1 : 0; // the phone, or the monitor
+  const gaze = pose === "permission" ? -1 : pose === "background" ? 1 : 0; // the phone, or the monitor
   if (pose === "review") { px(c, cx - 3, eyeY, 2, 1, "#222"); px(c, cx + 1, eyeY, 2, 1, "#222"); }
-  else { px(c, cx - 3 + look2, eyeY, 1, 2, "#222"); px(c, cx + 2 + look2, eyeY, 1, 2, "#222"); }
+  else { px(c, cx - 3 + gaze, eyeY, 1, 2, "#222"); px(c, cx + 2 + gaze, eyeY, 1, 2, "#222"); }
   if (look.glasses) { c.strokeStyle = "#222"; c.lineWidth = 0.6; c.strokeRect(cx - 4.5, eyeY - 0.8, 3.5, 3); c.strokeRect(cx + 0.8, eyeY - 0.8, 3.5, 3); }
   if (pose === "error") px(c, cx - 1, headY + 8, 3, 2, "#5a1a1a");
   else if (pose === "review") px(c, cx - 2, headY + 8, 4, 1, "#7a3b2a");
@@ -139,28 +168,29 @@ const GLYPHS = {
   "?": ["111", "001", "011", "000", "010"],
   "z": ["111", "001", "010", "100", "111"],
 };
+type Glyph = keyof typeof GLYPHS;
 // An hourglass centered on (cx, cy): the sand runs down for 4 s, then it flips over.
 // 5 x 7, so it keeps a 1 px gap inside the 13 x 9 screen.
 const GLASS_ROWS = [5, 3, 3, 1, 3, 3, 5]; // widths; the first and last rows are the caps, the middle one the neck
-function hourglass(c, cx, cy, t) {
+function hourglass(c: Ctx, cx: number, cy: number, t: number) {
   const RUN = 4, FLIP = 0.6, phase = t % (RUN + FLIP), p = Math.min(phase / RUN, 1);
   c.save();
   c.translate(cx, cy);
   if (phase > RUN) c.rotate(((phase - RUN) / FLIP) * Math.PI);
   GLASS_ROWS.forEach((w, i) => px(c, -w / 2, i - 3.5, w, 1, i === 0 || i === 6 ? "#a0703f" : "#3a2f12"));
   // Sand settles from the neck outward: the top chamber empties as the bottom fills.
-  const fill = (row, n) => { const w = GLASS_ROWS[row], k = Math.min(n, w); px(c, -w / 2 + Math.floor((w - k) / 2), row - 3.5, k, 1, "#f2b233"); return k; };
+  const fill = (row: number, n: number) => { const w = GLASS_ROWS[row] ?? 0, k = Math.min(n, w); px(c, -w / 2 + Math.floor((w - k) / 2), row - 3.5, k, 1, "#f2b233"); return k; };
   let top = Math.round((1 - p) * 6), bottom = 6 - top;
   for (const row of [2, 1]) top -= fill(row, top);
   for (const row of [5, 4]) bottom -= fill(row, bottom);
   if (p < 1) px(c, -0.5, -0.5, 1, 1, "#f2b233"); // the falling grain in the neck
   c.restore();
 }
-function glyph(c, ch, x, y, col) { GLYPHS[ch].forEach((row, j) => [...row].forEach((b, i) => b === "1" && px(c, x + i, y + j, 1, 1, col))); }
-function bubble(c, x, y, chars, col) {
+function glyph(c: Ctx, ch: Glyph, x: number, y: number, col: string) { GLYPHS[ch].forEach((row, j) => [...row].forEach((b, i) => b === "1" && px(c, x + i, y + j, 1, 1, col))); }
+function bubble(c: Ctx, x: number, y: number, chars: Glyph[], col: string) {
   const w = chars.length * 4 + 3;
   px(c, x, y, w, 9, "#fdfbf3"); px(c, x + 2, y + 9, 2, 2, "#fdfbf3");
-  [...chars].forEach((ch, i) => glyph(c, ch, x + 2 + i * 4, y + 2, col));
+  chars.forEach((ch, i) => glyph(c, ch, x + 2 + i * 4, y + 2, col));
 }
 
 // ============================================================================
@@ -171,8 +201,11 @@ const CELL_W = 56, CELL_H = 56, WALL_H = 30, PAD = 6;
 // Below this width (the cmux Dock), the office drops its wall and shows only desks. Matches the CSS breakpoint.
 const NARROW_PX = 520;
 
+// Where a desk is drawn, in logical pixels.
+type Slot = { a: ViewAgent; x: number; y: number };
+
 // Desks flow left to right, as many per row as fit, and the rows sit centred in the room.
-function deskSlots(list, cols, w, top) {
+function deskSlots(list: ViewAgent[], cols: number, w: number, top: number): Slot[] {
   const left = Math.max(PAD, Math.floor((w - cols * CELL_W) / 2));
   return list.map((a, i) => ({ a, x: left + (i % cols) * CELL_W, y: top + 6 + Math.floor(i / cols) * CELL_H }));
 }
@@ -180,49 +213,50 @@ function deskSlots(list, cols, w, top) {
 // Desk order is stable: first seen, first seated. An agent with a seat number (the demo's)
 // takes its place in seat order instead, so the demo office looks the same every time.
 // byRecent (the cmux Dock): your latest interaction sits at the top; ties keep the stable order.
-const seatOrder = [];
-function seated(list, byRecent = false) {
-  const byId = new Map(list.map((a) => [a.id, a]));
+const seatOrder: string[] = [];
+function seated(list: ViewAgent[], byRecent = false): ViewAgent[] {
+  const byAgentId = new Map(list.map((a) => [a.id, a]));
   for (const a of list) {
     if (seatOrder.includes(a.id)) continue;
-    const before = a.seat === undefined ? -1 : seatOrder.findIndex((id) => (byId.get(id)?.seat ?? -Infinity) > a.seat);
+    const seat = a.seat;
+    const before = seat === undefined ? -1 : seatOrder.findIndex((id) => (byAgentId.get(id)?.seat ?? -Infinity) > seat);
     if (before < 0) seatOrder.push(a.id); else seatOrder.splice(before, 0, a.id);
   }
-  for (let i = seatOrder.length - 1; i >= 0; i--) if (!byId.has(seatOrder[i])) seatOrder.splice(i, 1);
-  const stable = seatOrder.map((id) => byId.get(id));
+  for (let i = seatOrder.length - 1; i >= 0; i--) if (!byAgentId.has(seatOrder[i] ?? "")) seatOrder.splice(i, 1);
+  const stable = seatOrder.flatMap((id) => byAgentId.get(id) ?? []);
   return byRecent ? stable.toSorted((a, b) => (b.touchedAt ?? 0) - (a.touchedAt ?? 0)) : stable;
 }
+
+// The wall props' places in logical pixels. chatter and clock are null when they don't fit.
+type Wall = { sign: boolean; sound: { x: number; label: string }; chatter: { x: number; label: string } | null; clock: number | null };
 
 // Lays out the wall props left to right in logical pixels, for any office width.
 // The switches matter most: their labels shrink, then go, before a switch does.
 // Then the sign, then the clock. The extinguisher always keeps the right edge.
-function wallLayout(c, w, scale) {
+function wallLayout(c: Ctx, w: number, scale: number): Wall {
   c.font = `600 ${scale * 3.4}px "IBM Plex Mono", monospace`;
-  const labelW = (t) => (t ? c.measureText(t).width / scale + 2 : 0);
+  const labelW = (t: string) => (t ? c.measureText(t).width / scale + 2 : 0);
   const room = w - 26;
   const withChatter = scale >= 2;
-  const options = [
+  const widths = ([a, ch]: [string, string]) => [16 + labelW(a), withChatter ? 16 + labelW(ch) : 0] as const;
+  const options: [string, string][] = [
     [settings.muted ? "SOUND OFF" : "SOUND ON", settings.popBubbles ? "CHATTER ON" : "CHATTER OFF"],
     ["SOUND", "CHATTER"],
-    ["", ""],
   ];
-  for (const [i, [a, ch]] of options.entries()) {
-    const aw = 16 + labelW(a);
-    const cw = withChatter ? 16 + labelW(ch) : 0;
-    if (6 + aw + cw > room && i < options.length - 1) continue;
-    const sign = 60 + aw + cw <= room;
-    const x = sign ? 60 : 6;
-    const end = x + aw + cw;
-    return {
-      sign,
-      sound: { x, label: a },
-      chatter: withChatter ? { x: x + aw, label: ch } : null,
-      clock: end + 4 <= w - 51 ? w - 42 : null,
-    };
-  }
+  const [a, ch] = options.find((o) => { const [aw, cw] = widths(o); return 6 + aw + cw <= room; }) ?? ["", ""];
+  const [aw, cw] = widths([a, ch]);
+  const sign = 60 + aw + cw <= room;
+  const x = sign ? 60 : 6;
+  const end = x + aw + cw;
+  return {
+    sign,
+    sound: { x, label: a },
+    chatter: withChatter ? { x: x + aw, label: ch } : null,
+    clock: end + 4 <= w - 51 ? w - 42 : null,
+  };
 }
 
-function drawSwitch(c, x, on) {
+function drawSwitch(c: Ctx, x: number, on: boolean) {
   px(c, x, 3, 14, 21, "#d9cfb2"); px(c, x + 1, 4, 12, 19, "#e8e1c8");
   px(c, x + 4, 6, 6, 13, "#3a3a3a");
   if (on) { px(c, x + 4, 6, 6, 6, "#3a8c4e"); px(c, x + 5, 4, 4, 4, "#2c6b3b"); }
@@ -230,7 +264,7 @@ function drawSwitch(c, x, on) {
 }
 
 // wall is null in a narrow office: carpet only.
-function drawRoom(c, w, h, t, wall) {
+function drawRoom(c: Ctx, w: number, h: number, wall: Wall | null) {
   // carpet
   for (let y = wall ? WALL_H : 0; y < h; y += 8) for (let x = 0; x < w; x += 8) px(c, x, y, 8, 8, ((x + y) / 8) % 2 ? "#3b3a33" : "#36352f");
   if (!wall) return;
@@ -256,7 +290,7 @@ function drawRoom(c, w, h, t, wall) {
     c.fillStyle = "#2a2a2a"; c.beginPath(); c.arc(ox, oy, 9, 0, 7); c.fill();
     c.fillStyle = "#f3eedc"; c.beginPath(); c.arc(ox, oy, 7.5, 0, 7); c.fill();
     for (let i = 0; i < 12; i += 3) { const a = (i / 12) * Math.PI * 2; px(c, Math.round(ox + Math.sin(a) * 6) - 0.5, Math.round(oy - Math.cos(a) * 6) - 0.5, 1, 1, "#2a2a2a"); }
-    const hand = (frac, len, width, col) => { const a = frac * Math.PI * 2; c.strokeStyle = col; c.lineWidth = width; c.beginPath(); c.moveTo(ox, oy); c.lineTo(ox + Math.sin(a) * len, oy - Math.cos(a) * len); c.stroke(); };
+    const hand = (frac: number, len: number, width: number, col: string) => { const a = frac * Math.PI * 2; c.strokeStyle = col; c.lineWidth = width; c.beginPath(); c.moveTo(ox, oy); c.lineTo(ox + Math.sin(a) * len, oy - Math.cos(a) * len); c.stroke(); };
     hand(((now.getHours() % 12) + now.getMinutes() / 60) / 12, 3.8, 1.2, "#2a2a2a");
     hand((now.getMinutes() + now.getSeconds() / 60) / 60, 5.6, 0.9, "#2a2a2a");
     hand(now.getSeconds() / 60, 6, 0.4, "#c0221a");
@@ -265,7 +299,7 @@ function drawRoom(c, w, h, t, wall) {
 
 // rowWidth > 0 means a one-column office: a colored divider under each desk replaces the outline.
 // glyphs: draw the small "!" and "?" bubbles. Only the small map needs them; elsewhere the speech bubble says it.
-function drawDesk(c, s, t, rowWidth = 0, glyphs = true) {
+function drawDesk(c: Ctx, s: Slot, t: number, rowWidth = 0, glyphs = true) {
   const { a, x, y } = s;
   const tier = a.tier;
   const pulse = 0.35 + 0.35 * Math.sin(t * 6);
@@ -291,7 +325,7 @@ function drawDesk(c, s, t, rowWidth = 0, glyphs = true) {
   // monitor
   const mx = x + 31, my = y + 8;
   px(c, mx, my, 17, 14, "#cfc6aa"); px(c, mx + 6, my + 14, 5, 2, "#b3aa8e");
-  const scr = (col) => px(c, mx + 2, my + 2, 13, 9, col);
+  const scr = (col: string) => px(c, mx + 2, my + 2, 13, 9, col);
   switch (a.state) {
     case "working": scr("#0d1a10"); for (let i = 0; i < 4; i++) px(c, mx + 3, my + 3 + i * 2, 3 + ((Math.floor(t * 5) + i * 3) % 9), 1, "#7dff8a"); break;
     case "background":
@@ -321,10 +355,10 @@ function drawDesk(c, s, t, rowWidth = 0, glyphs = true) {
     for (let i = 0; i < 4; i++) px(c, mx + 2 + i * 4, my + 10 - (Math.floor(t * 12 + i) % 3), 3, 3, i % 2 ? "#ffcc33" : "#ff6a1a");
   }
   // bubbles
-  if (glyphs && a.state === "permission") bubble(c, x + 6, y - 9, "!", "#d22");
-  if (glyphs && a.state === "question") bubble(c, x + 6, y - 9, "?", "#2a62d4");
-  if (glyphs && a.state === "waiting") bubble(c, x + 4, y - 9, "!?", "#d22");
-  if (glyphs && a.state === "error") bubble(c, x + 6, y - 9, "!", "#d22");
+  if (glyphs && a.state === "permission") bubble(c, x + 6, y - 9, ["!"], "#d22");
+  if (glyphs && a.state === "question") bubble(c, x + 6, y - 9, ["?"], "#2a62d4");
+  if (glyphs && a.state === "waiting") bubble(c, x + 4, y - 9, ["!", "?"], "#d22");
+  if (glyphs && a.state === "error") bubble(c, x + 6, y - 9, ["!"], "#d22");
   // asleep: an empty chair with z's drifting up from it
   if (a.state === "idle") for (let i = 0; i < 2; i++) { const p = (t * 0.5 + i * 0.5) % 1; glyph(c, "z", x + 17 + p * 6, y + 8 - p * 14, `rgba(220,220,255,${1 - p})`); }
   // helpers (subagents): one badge above the desk, a tiny figure plus a count drawn in the label pass
@@ -335,7 +369,7 @@ function drawDesk(c, s, t, rowWidth = 0, glyphs = true) {
   }
 }
 // The longest start of `text` that fits in maxPx with the current font, with "…" when cut.
-function fitText(c, text, maxPx) {
+function fitText(c: Ctx, text: string, maxPx: number) {
   if (c.measureText(text).width <= maxPx) return text;
   let lo = 0, hi = text.length;
   while (lo < hi) {
@@ -345,21 +379,21 @@ function fitText(c, text, maxPx) {
   return text.slice(0, lo) + "…";
 }
 
-function wrap(c, text, maxW, maxLines = 3) {
-  const lines = [];
+function wrap(c: Ctx, text: string, maxW: number, maxLines = 3) {
+  const lines: string[] = [];
   let line = "";
   for (const word of text.split(" ")) {
     const next = line ? `${line} ${word}` : word;
     if (c.measureText(next).width > maxW && line) { lines.push(line); line = word; } else line = next;
   }
   if (line) lines.push(line);
-  if (lines.length > maxLines) { lines.length = maxLines; lines[maxLines - 1] = lines[maxLines - 1].replace(/.{0,2}$/, "…"); }
+  if (lines.length > maxLines) { lines.length = maxLines; lines[maxLines - 1] = (lines[maxLines - 1] ?? "").replace(/.{0,2}$/, "…"); }
   return lines;
 }
 
 // A speech bubble above a desk, in real pixels. Urgent ones are paper white with a red edge;
 // hover ones are a green-on-black thought from the monitor.
-function speech(c, s, scale, alpha = 1) {
+function speech(c: Ctx, s: Slot, scale: number, alpha = 1) {
   const a = s.a;
   c.globalAlpha = alpha;
   const urgent = a.tier === "urgent";
@@ -386,50 +420,50 @@ function speech(c, s, scale, alpha = 1) {
 }
 
 // Hit areas on the office wall, in logical pixels.
-const onSwitch = (wall, lx, ly) => !!wall && lx >= wall.sound.x && lx < wall.sound.x + 14 && ly >= 3 && ly < 24;
-const onChatter = (wall, lx, ly) => !!wall?.chatter && lx >= wall.chatter.x && lx < wall.chatter.x + 14 && ly >= 3 && ly < 24;
-const onExtinguisher = (wall, lx, ly, w) => !!wall && lx >= w - 21 && lx < w - 10 && ly >= 3 && ly < 25;
+const onSwitch = (wall: Wall | null, lx: number, ly: number) => !!wall && lx >= wall.sound.x && lx < wall.sound.x + 14 && ly >= 3 && ly < 24;
+const onChatter = (wall: Wall | null, lx: number, ly: number) => !!wall?.chatter && lx >= wall.chatter.x && lx < wall.chatter.x + 14 && ly >= 3 && ly < 24;
+const onExtinguisher = (wall: Wall | null, lx: number, ly: number, w: number) => !!wall && lx >= w - 21 && lx < w - 10 && ly >= 3 && ly < 25;
 
-const badgeHit = (s, lx, ly) => s.a.helpers.length && lx >= s.x + 36 && lx < s.x + 52 && ly >= s.y - 9 && ly < s.y;
+const badgeHit = (s: Slot, lx: number, ly: number) => s.a.helpers.length > 0 && lx >= s.x + 36 && lx < s.x + 52 && ly >= s.y - 9 && ly < s.y;
+const deskHit = (s: Slot, lx: number, ly: number) => lx >= s.x && lx < s.x + CELL_W && ly >= s.y - 10 && ly < s.y + CELL_H - 10;
 
 // Mounts a canvas office into `host`. scale = screen pixels per logical pixel.
-function mountOffice(host, scale) {
+function mountOffice(host: HTMLElement, scale: number) {
   const canvas = document.createElement("canvas");
   canvas.className = "office";
   host.appendChild(canvas);
-  const c = canvas.getContext("2d");
-  let slots = [];
+  const c = context2d(canvas);
+  let slots: Slot[] = [];
+  let lw = 0;
+  let hoverId: string | undefined;
+  let wall: Wall | null = null;
+  let targets: Slot[] = []; // where each desk belongs this frame
+  let lastMs: number | undefined;
+  const shown = new Map<string, { x: number; y: number }>(); // id -> where the desk is drawn now, gliding toward its target
   canvas.addEventListener("click", (e) => {
     const r = canvas.getBoundingClientRect();
     const lx = (e.clientX - r.left) / scale, ly = (e.clientY - r.top) / scale;
     if (onSwitch(wall, lx, ly)) return post("/api/settings/muted/toggle");
     if (onChatter(wall, lx, ly)) return post("/api/settings/popBubbles/toggle");
     if (onExtinguisher(wall, lx, ly, lw)) return post(`/api/fire${IN_CMUX ? "?from=cmux" : ""}`);
-    const hit = slots.find((s) => lx >= s.x && lx < s.x + CELL_W && ly >= s.y - 10 && ly < s.y + CELL_H - 10);
+    const hit = slots.find((s) => deskHit(s, lx, ly));
     if (hit) { select(undefined); jump(hit.a.id); }
   });
   canvas.addEventListener("mousemove", (e) => {
     const r = canvas.getBoundingClientRect();
     const lx = (e.clientX - r.left) / scale, ly = (e.clientY - r.top) / scale;
     const hit = slots.find((s) => badgeHit(s, lx, ly));
-    hoverId = slots.find((s) => lx >= s.x && lx < s.x + CELL_W && ly >= s.y - 10 && ly < s.y + CELL_H - 10)?.a.id;
+    hoverId = slots.find((s) => deskHit(s, lx, ly))?.a.id;
     canvas.title = onSwitch(wall, lx, ly) ? (settings.muted ? "Turn sound back on" : "Mute all sounds")
       : onChatter(wall, lx, ly) ? (settings.popBubbles ? "Turn off chatter: only urgent asks pop up" : "Turn chatter back on")
       : onExtinguisher(wall, lx, ly, lw) ? "Put out the oldest fire"
       : hit ? `Helpers: ${hit.a.helpers.map((h) => h.label).join(", ")}` : "";
   });
   canvas.addEventListener("mouseleave", () => { hoverId = undefined; });
-  let alive = true;
-  let lw = 0;
-  let hoverId;
-  let wall;
-  let targets = [];     // where each desk belongs this frame
-  let lastMs;
-  const shown = new Map(); // id -> where the desk is drawn now, gliding toward its target
 
   // Moves each desk part of the way to its target every frame (ease-out, about a third of a
   // second end to end). A new desk appears in place; a desk that left is forgotten.
-  function glide(list, dt) {
+  function glide(list: Slot[], dt: number): Slot[] {
     const k = 1 - Math.exp(-dt * 12);
     const ids = new Set(list.map((s) => s.a.id));
     for (const id of shown.keys()) if (!ids.has(id)) shown.delete(id);
@@ -442,8 +476,7 @@ function mountOffice(host, scale) {
       return { ...s, x: Math.round(p.x), y: Math.round(p.y) };
     });
   }
-  function frame(ms) {
-    if (!alive) return;
+  function frame(ms: number) {
     const t = ms / 1000;
     const wpx = host.clientWidth || 600;
     lw = Math.floor(wpx / scale);
@@ -456,14 +489,14 @@ function mountOffice(host, scale) {
     c.setTransform(scale, 0, 0, scale, 0, 0);
     c.imageSmoothingEnabled = false;
     wall = top === WALL_H ? wallLayout(c, lw, scale) : null;
-    drawRoom(c, lw, lh, t, wall);
+    drawRoom(c, lw, lh, wall);
     targets = deskSlots(list, cols, lw, top);
     slots = glide(targets, (ms - (lastMs ?? ms)) / 1000);
     lastMs = ms;
     const single = cols === 1;
     // Desks still gliding draw last, so they slide over the desks they pass.
-    const moving = (s, i) => (s.x !== targets[i].x || s.y !== targets[i].y ? 1 : 0);
-    slots.map((s, i) => [s, moving(s, i)]).toSorted((p, q) => p[1] - q[1]).forEach(([s]) => drawDesk(c, s, t, single ? lw : 0, scale < 2));
+    const moving = (s: Slot, i: number) => (s.x !== targets[i]?.x || s.y !== targets[i]?.y ? 1 : 0);
+    slots.map((s, i): [Slot, number] => [s, moving(s, i)]).toSorted((p, q) => p[1] - q[1]).forEach(([s]) => drawDesk(c, s, t, single ? lw : 0, scale < 2));
     // name labels in real pixels so they stay sharp
     c.setTransform(1, 0, 0, 1, 0, 0);
     c.font = `${Math.max(8, scale * 3.6)}px "IBM Plex Mono", monospace`;
@@ -492,45 +525,46 @@ function mountOffice(host, scale) {
     // A changed line pops up for a few seconds, fading in fast and out slowly.
     if (scale >= 2) {
       const nowMs = Date.now();
-      const popAlpha = (id) => {
+      const popAlpha = (id: string) => {
         const age = nowMs - (pops.get(id) ?? -Infinity);
         return settings.popBubbles && age < POP_MS ? Math.min(1, age / 200, (POP_MS - age) / 1000) : 0;
       };
       const show = slots
         .map((s) => ({ s, alpha: s.a.tier === "urgent" || s.a.id === hoverId ? 1 : popAlpha(s.a.id) }))
         .filter((b) => b.s.a.state !== "ended" && b.alpha > 0);
-      show.sort((p, q) => (p.s.a.id === hoverId) - (q.s.a.id === hoverId));
-      for (const b of show) speech(c, b.s, scale, b.alpha);
+      // The hovered desk's bubble draws last, on top.
+      const hovered = (b: { s: Slot }) => Number(b.s.a.id === hoverId);
+      for (const b of show.toSorted((p, q) => hovered(p) - hovered(q))) speech(c, b.s, scale, b.alpha);
     }
     requestAnimationFrame(frame);
   }
   requestAnimationFrame(frame);
   return {
-    destroy() { alive = false; },
     // Where a desk sits in the viewport, in CSS pixels, so the page can scroll it into view.
     // Where a desk is heading (not where it is mid-glide), so scrolling aims at its final place.
-    deskBox(id) {
+    deskBox(id: string) {
       const s = targets.find((x) => x.a.id === id);
       if (!s) return undefined;
       const r = canvas.getBoundingClientRect();
       const k = (r.width / canvas.width) * scale;
-      return { top: r.top + (s.y - 10) * k, bottom: r.top + (s.y + 47) * k, firstRow: s.y === targets[0].y };
+      return { top: r.top + (s.y - 10) * k, bottom: r.top + (s.y + 47) * k, firstRow: s.y === targets[0]?.y };
     },
     // The desks in the order the office shows them, for the keyboard walk.
     deskIds: () => targets.filter((s) => s.a.state !== "ended").map((s) => s.a.id),
   };
 }
 
-const portraits = new Map();
-function portrait(a) {
-  if (portraits.has(a.id)) return portraits.get(a.id);
+const portraits = new Map<string, string>();
+function portrait(id: string): string {
+  const known = portraits.get(id);
+  if (known) return known;
   const cv = document.createElement("canvas");
   cv.width = 24; cv.height = 24;
-  const c = cv.getContext("2d");
+  const c = context2d(cv);
   px(c, 0, 0, 24, 24, "#2c3b33");
-  drawPerson(c, 4, 6, lookFor(a.id), "still", 0);
+  drawPerson(c, 4, 6, lookFor(id), "still", 0);
   const url = cv.toDataURL();
-  portraits.set(a.id, url);
+  portraits.set(id, url);
   return url;
 }
 
@@ -539,7 +573,7 @@ function portrait(a) {
 // ============================================================================
 
 // Live sessions that vanish linger for a few seconds as an empty desk.
-function withGhosts(list) {
+function withGhosts(list: ViewAgent[]): ViewAgent[] {
   const now = Date.now();
   const ids = new Set(list.map((a) => a.id));
   for (const a of agents) if (a.source === "live" && !ids.has(a.id) && !ghosts.has(a.id)) ghosts.set(a.id, { agent: { ...a, state: "ended", tier: "quiet" }, until: now + 6000 });
@@ -547,7 +581,7 @@ function withGhosts(list) {
   return [...list, ...[...ghosts.values()].map((g) => g.agent)];
 }
 
-function update(state) {
+function update(state: PageState) {
   settings = state.settings;
   hooks = state.hooks;
   for (const a of state.agents) {
@@ -566,12 +600,13 @@ function update(state) {
 // The Dock hint: the user's own cmux keys for the right sidebar, then this page's keys.
 // A cmux shortcut the user unbound is left out.
 let lastHint = "";
-function showKeysHint(keys) {
-  const items = [[keys?.toggle, "show/hide"], [keys?.focus, "focus"], ["↑↓", "pick"], ["⏎", "jump"]].filter(([k]) => k);
+function showKeysHint(keys: Shortcuts) {
+  const all: [string | null, string][] = [[keys.toggle, "show/hide"], [keys.focus, "focus"], ["↑↓", "pick"], ["⏎", "jump"]];
+  const items = all.filter((item): item is [string, string] => Boolean(item[0]));
   const signature = JSON.stringify(items);
   if (signature === lastHint) return;
   lastHint = signature;
-  document.getElementById("keys-hint").replaceChildren(...items.map(([k, what]) => {
+  byId("keys-hint").replaceChildren(...items.map(([k, what]) => {
     const item = document.createElement("span");
     const kbd = document.createElement("kbd");
     kbd.textContent = k;
@@ -580,9 +615,9 @@ function showKeysHint(keys) {
   }));
 }
 
-let toastTimer;
-function toast(msg) {
-  const el = document.getElementById("toast");
+let toastTimer: ReturnType<typeof setTimeout> | undefined;
+function toast(msg: string) {
+  const el = byId("toast");
   el.textContent = msg;
   el.classList.add("show");
   clearTimeout(toastTimer);
@@ -592,34 +627,38 @@ function toast(msg) {
 // One sound per kind of attention, matching the desk, so you can tell them apart without looking.
 // Each note: [start s, length s, frequencies Hz, wave, peak gain, bell]. A bell note fades out
 // from its start; the others hold, then cut off.
-const SOUNDS = {
+type Note = [at: number, dur: number, freqs: number[], wave: OscillatorType, peak: number, bell?: boolean];
+type Sound = "phone" | "ding" | "buzz" | "chime" | "beep";
+const SOUNDS: Record<Sound, Note[]> = {
   phone: [[0, 0.35, [400, 450], "sine", 0.12], [0.5, 0.35, [400, 450], "sine", 0.12]], // the red phone rings
   ding: [[0, 0.3, [988], "triangle", 0.16, true], [0.15, 0.5, [1319], "triangle", 0.16, true]], // a hand goes up
-  buzz: [0, 0.18, 0.36].map((at) => [at, 0.12, [220], "square", 0.05]), // the fire alarm
+  buzz: [0, 0.18, 0.36].map((at): Note => [at, 0.12, [220], "square", 0.05]), // the fire alarm
   chime: [[0, 0.6, [660], "sine", 0.1, true]], // a turn finished
   beep: [[0, 0.12, [880], "sine", 0.12]],
 };
-const SOUND_FOR = { permission: "phone", waiting: "phone", question: "ding", error: "buzz", review: "chime" };
+const SOUND_FOR: Record<string, Sound> = { permission: "phone", waiting: "phone", question: "ding", error: "buzz", review: "chime" };
 
-let audio;
-function ring(state) {
-  if (!audio || settings.muted) return;
+let audio: AudioContext | undefined;
+// state: an agent state, or the one a Settings "Test" button names.
+function ring(state: string) {
+  const ctx = audio;
+  if (!ctx || settings.muted) return;
   const notes = SOUNDS[settings.sound === "beep" ? "beep" : SOUND_FOR[state] ?? "phone"];
   // A hidden page's audio can be suspended. Wake it, then play.
-  if (audio.state === "running") play(notes);
-  else audio.resume().then(() => audio.state === "running" && play(notes), () => {});
+  if (ctx.state === "running") play(ctx, notes);
+  else ctx.resume().then(() => { if (ctx.state === "running") play(ctx, notes); }, () => {});
 }
 
-function play(notes) {
-  const now = audio.currentTime;
+function play(ctx: AudioContext, notes: Note[]) {
+  const now = ctx.currentTime;
   for (const [at, dur, freqs, wave, peak, bell] of notes) {
     for (const f of freqs) {
-      const o = audio.createOscillator(), g = audio.createGain();
+      const o = ctx.createOscillator(), g = ctx.createGain();
       o.frequency.value = f; o.type = wave;
       g.gain.setValueAtTime(0.0001, now + at); g.gain.exponentialRampToValueAtTime(peak, now + at + 0.015);
       if (!bell) g.gain.setValueAtTime(peak, now + at + dur - 0.03);
       g.gain.exponentialRampToValueAtTime(0.0001, now + at + dur);
-      o.connect(g).connect(audio.destination); o.start(now + at); o.stop(now + at + dur);
+      o.connect(g).connect(ctx.destination); o.start(now + at); o.stop(now + at + dur);
     }
   }
 }
@@ -643,49 +682,53 @@ function alertOnChanges() {
     if (a.tier === "review" && settings.reviewSound) ring(a.state);
   }
   const n = agents.filter((a) => a.tier === "urgent" && a.state !== "ended").length;
-  const counted = settings.tabCount && n;
+  const counted = settings.tabCount && n > 0;
   const name = DEMO ? "The AI Crowd (demo)" : "The AI Crowd";
   document.title = counted ? `(${n}) ${name}` : name;
   const fav = document.createElement("canvas");
   fav.width = fav.height = 32;
-  const fc = fav.getContext("2d");
+  const fc = context2d(fav);
   px(fc, 4, 10, 24, 14, "#c0221a"); px(fc, 2, 6, 28, 5, "#e0362b");
-  if (counted) { fc.fillStyle = "#fff"; fc.beginPath(); fc.arc(24, 8, 8, 0, 7); fc.fill(); fc.fillStyle = "#c0221a"; fc.font = "bold 13px sans-serif"; fc.textAlign = "center"; fc.fillText(n, 24, 13); }
-  document.getElementById("favicon").href = fav.toDataURL();
+  if (counted) { fc.fillStyle = "#fff"; fc.beginPath(); fc.arc(24, 8, 8, 0, 7); fc.fill(); fc.fillStyle = "#c0221a"; fc.font = "bold 13px sans-serif"; fc.textAlign = "center"; fc.fillText(String(n), 24, 13); }
+  byId<HTMLLinkElement>("favicon").href = fav.toDataURL();
 }
 
 function showHooksBar() {
-  document.getElementById("hooks-bar").hidden = hooks || settings.hooksDismissed || !agents.some((a) => a.source === "live");
+  byId("hooks-bar").hidden = hooks || settings.hooksDismissed || !agents.some((a) => a.source === "live");
 }
 
-const dlg = document.getElementById("settings");
+const dlg = byId<HTMLDialogElement>("settings");
+const settingFields = () => dlg.querySelectorAll<HTMLInputElement | HTMLSelectElement>("[data-set]");
+const isCheckbox = (el: HTMLInputElement | HTMLSelectElement): el is HTMLInputElement => el instanceof HTMLInputElement && el.type === "checkbox";
 function syncSettingsForm() {
-  dlg.querySelectorAll("[data-set]").forEach((el) => {
+  const values: Record<string, unknown> = settings;
+  settingFields().forEach((el) => {
     if (el === document.activeElement) return;
-    const v = settings[el.dataset.set];
-    if (el.type === "checkbox") el.checked = v; else el.value = v;
+    const v = values[el.dataset.set ?? ""];
+    if (isCheckbox(el)) el.checked = v === true; else el.value = String(v);
   });
 }
-dlg.querySelectorAll("[data-set]").forEach((el) => {
-  el.addEventListener("change", () => post(`/api/settings/${el.dataset.set}/${el.type === "checkbox" ? el.checked : el.value}`));
+settingFields().forEach((el) => {
+  el.addEventListener("change", () => post(`/api/settings/${el.dataset.set}/${isCheckbox(el) ? el.checked : el.value}`));
 });
 
 document.addEventListener("click", async (e) => {
-  const act = e.target.closest("[data-act]")?.dataset.act;
+  const button = targetElement(e)?.closest<HTMLElement>("[data-act]");
+  const act = button?.dataset.act;
   if (act === "settings") dlg.showModal();
   if (act === "close-settings") dlg.close();
   if (act === "dismiss-hooks") post("/api/settings/hooksDismissed/true");
-  if (act === "test-sound") { await unlockAudio(); ring(e.target.closest("[data-act]").dataset.state); }
+  if (act === "test-sound") { await unlockAudio(); ring(button?.dataset.state ?? ""); }
 });
 
 // The server renders <img data-portrait="id">; the browser draws the face. Datastar morphs the
 // list every second, so a MutationObserver redraws faces and re-marks the picked row before paint.
 function decorateList() {
-  document.querySelectorAll("img[data-portrait]").forEach((im) => {
-    const url = portrait({ id: im.dataset.portrait });
+  document.querySelectorAll<HTMLImageElement>("img[data-portrait]").forEach((im) => {
+    const url = portrait(im.dataset.portrait ?? "");
     if (im.getAttribute("src") !== url) im.src = url;
   });
-  document.querySelectorAll("tr.row").forEach((r) => {
+  document.querySelectorAll<HTMLElement>("tr.row").forEach((r) => {
     const on = picked?.kind === "row" && r.dataset.id === picked.id;
     if (r.classList.contains("selected") !== on) r.classList.toggle("selected", on);
   });
@@ -695,13 +738,13 @@ new MutationObserver(decorateList).observe(document.body, { childList: true, sub
 // Keyboard: ↓ walks the desks top to bottom, then the list rows, and stops at the last row.
 // ↑ walks back and stops at the first desk. Enter jumps to the picked session, Esc clears.
 // In the cmux Dock, ⌘⇧E gives this page keyboard focus.
-function pickables() {
-  const desks = office.deskIds().map((id) => ({ kind: "desk", id }));
-  const rows = [...document.querySelectorAll("tr.row[data-id]")].map((r) => ({ kind: "row", id: r.dataset.id }));
+function pickables(): Pick[] {
+  const desks = office.deskIds().map((id): Pick => ({ kind: "desk", id }));
+  const rows = [...document.querySelectorAll<HTMLElement>("tr.row[data-id]")].map((r): Pick => ({ kind: "row", id: r.dataset.id ?? "" }));
   return [...desks, ...rows];
 }
 
-function select(item) {
+function select(item: Pick | undefined) {
   picked = item;
   decorateList();
   if (item?.kind === "row") {
@@ -716,7 +759,7 @@ function select(item) {
 }
 
 addEventListener("keydown", (e) => {
-  if (dlg.open || e.metaKey || e.ctrlKey || e.altKey || e.target.closest?.("input, select, textarea, [contenteditable]")) return;
+  if (dlg.open || e.metaKey || e.ctrlKey || e.altKey || targetElement(e)?.closest("input, select, textarea, [contenteditable]")) return;
   const items = pickables();
   const i = items.findIndex((it) => it.kind === picked?.kind && it.id === picked?.id);
   if ((e.key === "ArrowDown" || e.key === "ArrowUp") && items.length) {
@@ -724,7 +767,7 @@ addEventListener("keydown", (e) => {
     // Nothing picked yet, or the pick has gone: start at the first desk.
     const next = i < 0 ? 0 : Math.min(items.length - 1, Math.max(0, i + (e.key === "ArrowDown" ? 1 : -1)));
     select(items[next]);
-  } else if (e.key === "Enter" && i >= 0) {
+  } else if (e.key === "Enter" && picked && i >= 0) {
     e.preventDefault();
     jump(picked.id);
     select(undefined);
@@ -734,13 +777,13 @@ addEventListener("keydown", (e) => {
 });
 // A click on a list row jumps to that session and ends any keyboard pick.
 document.addEventListener("click", (e) => {
-  const row = e.target.closest?.("tr.row[data-id]");
-  if (!row) return;
+  const id = targetElement(e)?.closest<HTMLElement>("tr.row[data-id]")?.dataset.id;
+  if (id === undefined) return;
   select(undefined);
-  jump(row.dataset.id);
+  jump(id);
 });
 
-const office = mountOffice(document.getElementById("office"), 3);
+const office = mountOffice(byId("office"), 3);
 
 // When ⇧⌘E gives the Dock keyboard focus, pick the first desk so ↑↓ and Enter work at once.
 // When the Dock loses focus, the pick goes too: the green outline means the keys work here.
@@ -757,10 +800,12 @@ addEventListener("focus", () => {
 });
 addEventListener("blur", () => { if (inDock() && picked) select(undefined); });
 
-window.crowd = {
-  stream: DEMO ? "/events?demo=1" : "/events",
-  patched(patch) {
-    if (typeof patch?._state === "string") update(JSON.parse(patch._state));
-    if (typeof patch?._toast === "string") toast(JSON.parse(patch._toast).text);
+Object.assign(window, {
+  crowd: {
+    stream: DEMO ? "/events?demo=1" : "/events",
+    patched(patch: { _state?: unknown; _toast?: unknown } | undefined) {
+      if (typeof patch?._state === "string") update(JSON.parse(patch._state));
+      if (typeof patch?._toast === "string") toast(JSON.parse(patch._toast).text);
+    },
   },
-};
+});

@@ -5,15 +5,16 @@
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { readFile } from "node:fs/promises";
+import { stripTypeScriptTypes } from "node:module";
 import { CONFIG_PATH, DEFAULTS, applySetting, loadSettings, saveSettings } from "./config.ts";
 import { demoAgents } from "./demo.ts";
 import { focus, matchPane, readPanes, releaseDockFocus, ttysOf } from "./cmux.ts";
 import { readRegistry } from "./registry.ts";
-import { readShortcuts, type Shortcuts } from "./shortcuts.ts";
+import { readShortcuts } from "./shortcuts.ts";
 import { renderChips, renderList } from "./render.ts";
 import { createStore, type HookEvent, type Store } from "./store.ts";
 import { readTranscript, transcriptPath } from "./transcript.ts";
-import type { Settings, ViewAgent } from "./types.ts";
+import type { PageState, Settings, Shortcuts, ViewAgent } from "./types.ts";
 
 const PORT = Number(process.env.AI_CROWD_PORT ?? 4747);
 const HOST = "127.0.0.1";
@@ -73,7 +74,7 @@ function frame(v: View): string {
   const now = Date.now();
   const agents = v.agents();
   // The page's office canvas reads _state; underscore signals are never sent back to the server.
-  const state = { now, agents, settings: v.settings, hooks: v.hooks(), shortcuts };
+  const state: PageState = { now, agents, settings: v.settings, hooks: v.hooks(), shortcuts };
   return patchElements(renderChips(agents, v.settings)) + patchElements(renderList(agents, now)) + patchSignals({ _state: JSON.stringify(state) });
 }
 
@@ -139,9 +140,9 @@ function readBody(req: IncomingMessage): Promise<string> {
 // Browsers send Origin on every POST. Hooks come from curl, which sends none.
 const fromPage = (req: IncomingMessage) => req.headers.origin === `http://${HOST}:${PORT}` || req.headers.origin === `http://localhost:${PORT}`;
 
-async function serveFile(res: ServerResponse, name: string, type: string) {
+function serve(res: ServerResponse, type: string, body: string | Buffer) {
   res.writeHead(200, { "content-type": type, "content-security-policy": CSP, "cache-control": "no-cache" });
-  res.end(await readFile(new URL(name, WEB)));
+  res.end(body);
 }
 
 function sendToast(res: ServerResponse, text: string) {
@@ -153,8 +154,12 @@ createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", `http://${HOST}`);
   const path = url.pathname;
   try {
-    if (req.method === "GET" && (path === "/" || path === "/demo")) return await serveFile(res, "index.html", "text/html; charset=utf-8");
-    if (req.method === "GET" && path === "/office.js") return await serveFile(res, "office.js", "text/javascript; charset=utf-8");
+    if (req.method === "GET" && (path === "/" || path === "/demo")) return serve(res, "text/html; charset=utf-8", await readFile(new URL("index.html", WEB)));
+    // The page's script is TypeScript. Node blanks out the types, as it does for the server's own
+    // .ts files, so line and column numbers in the browser's devtools match office.ts.
+    if (req.method === "GET" && path === "/office.js") {
+      return serve(res, "text/javascript; charset=utf-8", stripTypeScriptTypes(await readFile(new URL("office.ts", WEB), "utf8")));
+    }
 
     if (req.method === "GET" && path === "/events") {
       res.writeHead(200, { "content-type": "text/event-stream", "cache-control": "no-cache", connection: "keep-alive" });

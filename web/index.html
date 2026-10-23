@@ -128,7 +128,7 @@
 </style>
 </head>
 <body>
-<!-- Datastar wiring: the event stream, actions from office.js, and signal patches handed to it. -->
+<!-- Datastar wiring: the event stream, actions from office.ts, and signal patches handed to it. -->
 <div id="stream" hidden data-init="@get(window.crowd.stream, {retry: 'always', retryMaxCount: 1000000, openWhenHidden: true})"></div>
 <div id="actions" hidden data-on:crowd-post="@post(evt.detail)"></div>
 <div hidden data-on-signal-patch="window.crowd && window.crowd.patched(patch)"></div>

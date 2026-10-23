@@ -38,3 +38,9 @@ export type Settings = {
   popBubbles: boolean;
   hooksDismissed: boolean;
 };
+
+// The user's cmux keys for the right sidebar, shown in the Dock hint. null when unbound.
+export type Shortcuts = { toggle: string | null; focus: string | null };
+
+// Everything the page's script gets in the _state signal.
+export type PageState = { now: number; agents: ViewAgent[]; settings: Settings; hooks: boolean; shortcuts: Shortcuts };

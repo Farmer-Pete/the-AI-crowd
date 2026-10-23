@@ -10,6 +10,7 @@ import { readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
+import type { Shortcuts } from "./types.ts";
 
 const run = promisify(execFile);
 const CMUX_JSON = join(homedir(), ".config", "cmux", "cmux.json");
@@ -18,8 +19,6 @@ const DEFAULTS_DOMAIN = "com.cmuxterm.app";
 // Show or hide the right sidebar (where the Dock lives), and move keyboard focus into it.
 const ACTIONS = { toggle: "toggleFileExplorer", focus: "focusRightSidebar" } as const;
 const BUILT_IN: Record<string, string> = { toggleFileExplorer: "⌥⌘B", focusRightSidebar: "⇧⌘E" };
-
-export type Shortcuts = { toggle: string | null; focus: string | null };
 
 // Removes // and /* */ comments and trailing commas, leaving strings alone, so JSON.parse can read JSONC.
 export function stripJsonc(text: string): string {
