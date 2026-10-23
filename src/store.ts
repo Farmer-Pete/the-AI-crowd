@@ -41,7 +41,7 @@ type Session = Agent & {
   pane: Pane;
   target?: PaneInfo;
   helperTypes: Map<string, string>;
-  awaiting: Task[]; // background tasks it waits on, from the transcript
+  awaiting: Task[]; // helpers it waits on, from the transcript
 };
 
 const URGENT = new Set<State>(["permission", "question", "error", "waiting"]);
@@ -139,7 +139,7 @@ export function createStore(clock: () => number = Date.now) {
       s.touchedAt = tr.promptAt;
       s.about = renamed?.description || undefined;
       s.target = pane;
-      s.awaiting = awaited(tr, reg, clock());
+      s.awaiting = awaited(tr, reg);
       if (!s.hooked) infer(s, reg, tr);
     }
     for (const [id, s] of sessions) if (!ids.has(id) && clock() - s.lastHookAt > HOOK_GRACE_MS) sessions.delete(id);
@@ -163,10 +163,10 @@ export function createStore(clock: () => number = Date.now) {
   function view(demo: Agent[] = []): ViewAgent[] {
     const live: Agent[] = [...sessions.values()].map(({ cwdAbs, hooked, lastHookAt, pane, target, helperTypes, awaiting, ...a }) => {
       const title = a.title || a.project;
-      // A finished turn with tasks still out waits on them, not on you.
+      // A finished turn with helpers still out waits on them, not on you.
       if (a.state === "review" && awaiting.length) {
-        const helpers = awaiting.filter((t) => t.kind === "agent" || t.kind === "workflow").map(({ id, label }) => ({ id, label }));
-        return { ...a, title, state: "background" as const, detail: waitLine(awaiting), helpers };
+        const helpers = awaiting.map(({ id, label }) => ({ id, label }));
+        return { ...a, title, state: "background" as const, detail: waitLine(helpers), helpers };
       }
       return { ...a, title, helpers: [...helperTypes].map(([id, label]) => ({ id, label })) };
     });
@@ -191,22 +191,16 @@ export function createStore(clock: () => number = Date.now) {
   return { applyHook, applyRegistry, view, markSeen, touch, where, hooksSeen: () => hooksSeen };
 }
 
-// The background tasks a session waits on. When unsure it leaves a task out, so the desk shows
-// Finished and you look: only tasks from this process, nothing after a turn that ends in a question,
-// only Monitors this turn started that will expire, and shells only while the registry says one runs.
-function awaited(tr: Transcript, reg: RegistryEntry, now: number): Task[] {
+// The helpers a session waits on. When unsure it leaves one out, so the desk shows Finished and you
+// look: only helpers from this process, and none after a turn that ends in a question.
+function awaited(tr: Transcript, reg: RegistryEntry): Task[] {
   if (tr.lastText.trim().endsWith("?")) return [];
-  return (tr.tasks ?? []).filter((t) => t.at >= (reg.startedAt ?? 0) &&
-    (t.kind !== "monitor" || (!t.persistent && t.at >= (tr.promptAt ?? 0) && (t.expiresAt ?? 0) > now)) &&
-    (t.kind !== "shell" || reg.status === "shell"));
+  return (tr.tasks ?? []).filter((t) => t.at >= (reg.startedAt ?? 0));
 }
 
-// "2 helpers: Review the retry design, Audit the webhook tests. Watching CI on PR #212. Wait for the build"
-function waitLine(tasks: Task[]): string {
-  const helpers = tasks.filter((t) => t.kind === "agent" || t.kind === "workflow").map((t) => t.label);
-  const parts = tasks.filter((t) => t.kind !== "agent" && t.kind !== "workflow").map((t) => (t.kind === "monitor" ? `Watching ${t.label}` : t.label));
-  if (helpers.length) parts.unshift(`${helpers.length} ${helpers.length === 1 ? "helper" : "helpers"}: ${helpers.join(", ")}`);
-  return short(parts.join(". "), 140);
+// "2 helpers: Review the retry design, Audit the webhook tests"
+function waitLine(helpers: { label: string }[]): string {
+  return short(`${helpers.length} ${helpers.length === 1 ? "helper" : "helpers"}: ${helpers.map((h) => h.label).join(", ")}`, 140);
 }
 
 export type Store = ReturnType<typeof createStore>;

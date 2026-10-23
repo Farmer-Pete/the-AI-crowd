@@ -73,7 +73,7 @@ const SCRIPTS: Script[] = [
     segments: [
       { state: "question", secs: 32, detail: "Should dark mode follow the system setting by default?" },
       { state: "working", secs: 12, detail: "Editing src/theme/ThemeProvider.tsx" },
-      { state: "background", secs: 25, detail: "Watching CI on PR #212" },
+      { state: "background", secs: 25, detail: "1 helper: Check CI on PR #212", helpers: ["Check CI on PR #212"] },
       { state: "working", secs: 8, detail: "Reading the CI results" },
     ],
   },

@@ -14,11 +14,9 @@ const obj = (v: unknown): Rec => (v && typeof v === "object" && !Array.isArray(v
 const str = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 type ToolUse = { id: string; name: string; input: Rec; pending: boolean };
-// A background task the session will hear back from: a helper agent, a workflow, a Monitor, or a shell
-// that waits on something. Other background shells are left out: a dev server and a build watcher
-// look the same, except that Claude describes a watcher as "Wait…", "Watch…", or "Poll…".
-export type Task = { id: string; kind: "agent" | "workflow" | "monitor" | "shell"; label: string; at: number; expiresAt?: number; persistent?: boolean };
-const WAITS = /^(wait|watch|poll)\b/i;
+// A helper the session will hear back from: a background agent or a workflow. Monitors and background
+// shells are left out: they only listen, and what they listen for may be CI, a reviewer, or you.
+export type Task = { id: string; label: string; at: number };
 // promptAt: when you last typed a prompt (a "user" record with origin.kind "human").
 export type Transcript = { title: string; tool?: ToolUse; lastText: string; promptAt?: number; tasks?: Task[] };
 
@@ -81,32 +79,23 @@ function latest(recs: Rec[]): Transcript {
 }
 
 // Walks the records oldest first. Claude Code records each launch in the tool result's toolUseResult,
-// and says a task ended with a <task-notification> that carries a <status> (a Monitor's last one
-// says it expired instead), or with a TaskStop result.
+// and says a task ended with a <task-notification> that carries a <status>, or with a TaskStop result.
 function openTasks(recs: Rec[]): Task[] {
   const running = new Map<string, Task>();
-  const inputs = new Map<unknown, Rec>(); // tool_use id -> input, for a description
-  const inputOf = (rec: Rec) => inputs.get(contentOf(rec).find((c) => c.type === "tool_result")?.tool_use_id) ?? {};
   for (const rec of recs) {
     const at = timeOf(rec) || 0;
-    if (rec.type === "assistant") for (const c of contentOf(rec)) if (c.type === "tool_use") inputs.set(c.id, obj(c.input));
     if (rec.type === "user") {
       const r = obj(rec.toolUseResult);
       if (r.status === "async_launched" && typeof r.agentId === "string") {
-        running.set(r.agentId, { id: r.agentId, kind: "agent", label: String(r.description || "a helper"), at });
+        running.set(r.agentId, { id: r.agentId, label: String(r.description || "a helper"), at });
       } else if (r.status === "async_launched" && r.taskType === "local_workflow" && typeof r.taskId === "string") {
-        running.set(r.taskId, { id: r.taskId, kind: "workflow", label: String(r.workflowName || "a workflow"), at });
-      } else if (typeof r.taskId === "string" && typeof r.timeoutMs === "number") {
-        const input = inputOf(rec);
-        running.set(r.taskId, { id: r.taskId, kind: "monitor", label: String(input.description || "a Monitor"), at, expiresAt: at + r.timeoutMs, persistent: r.persistent === true });
-      } else if (typeof r.backgroundTaskId === "string" && WAITS.test(String(inputOf(rec).description ?? ""))) {
-        running.set(r.backgroundTaskId, { id: r.backgroundTaskId, kind: "shell", label: String(inputOf(rec).description), at });
+        running.set(r.taskId, { id: r.taskId, label: String(r.workflowName || "a workflow"), at });
       }
       if (typeof r.task_id === "string") running.delete(r.task_id); // TaskStop
     }
     for (const note of notifications(rec)) {
       const id = note.match(/<task-id>(\w+)<\/task-id>/)?.[1];
-      if (id && (/<status>\w+<\/status>/.test(note) || note.includes("[Monitor expired"))) running.delete(id);
+      if (id && /<status>\w+<\/status>/.test(note)) running.delete(id);
     }
   }
   return [...running.values()];

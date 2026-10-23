@@ -59,39 +59,21 @@ const shell = (id: string, description: string, at: string) => [
 
 test("a background agent stays open until its notification has a status", () => {
   const agent = launch("2026-10-22T10:00:00Z", { isAsync: true, status: "async_launched", agentId: "a1", description: "Review the design" });
-  assert.deepEqual(parseTail(agent).tasks, [{ id: "a1", kind: "agent", label: "Review the design", at: Date.parse("2026-10-22T10:00:00Z") }]);
+  assert.deepEqual(parseTail(agent).tasks, [{ id: "a1", label: "Review the design", at: Date.parse("2026-10-22T10:00:00Z") }]);
   assert.deepEqual(parseTail([agent, notify("a1", "completed")].join("\n")).tasks, []);
+  const stopped = launch("2026-10-22T10:00:30Z", { message: "Successfully stopped task: a1", task_id: "a1" }, "t10");
+  assert.deepEqual(parseTail([agent, stopped].join("\n")).tasks, [], "TaskStop ends it too");
 });
 
-test("a Monitor takes its label from the call and closes on expiry or TaskStop", () => {
-  const call = line({ type: "assistant", message: { content: [{ type: "tool_use", id: "t9", name: "Monitor", input: { description: "CI on PR #212" } }] } });
-  const started = launch("2026-10-22T10:00:00Z", { taskId: "m1", timeoutMs: 60_000, persistent: false }, "t9");
-  const [task] = parseTail([call, started].join("\n")).tasks ?? [];
-  assert.ok(task);
-  assert.equal(task.label, "CI on PR #212");
-  assert.equal(task.expiresAt, Date.parse("2026-10-22T10:01:00Z"));
-  const event = line({ type: "queue-operation", operation: "enqueue", content: "<task-notification>\n<task-id>m1</task-id>\n<event>PR approved</event>\n</task-notification>" });
-  assert.equal(parseTail([call, started, event].join("\n")).tasks?.length, 1, "an event alone doesn't end it");
-  const expired = line({ type: "queue-operation", operation: "enqueue", content: "<task-notification>\n<task-id>m1</task-id>\n<event>[Monitor expired after 1m]</event>\n</task-notification>" });
-  assert.deepEqual(parseTail([call, started, expired].join("\n")).tasks, []);
-  const stopped = launch("2026-10-22T10:00:30Z", { message: "Successfully stopped task: m1", task_id: "m1", task_type: "monitor_mcp" }, "t10");
-  assert.deepEqual(parseTail([call, started, stopped].join("\n")).tasks, []);
-});
-
-test("workflows count; background shells don't", () => {
+test("workflows count; Monitors and background shells don't, since they may wait on you", () => {
+  const monitor = [
+    line({ type: "assistant", message: { content: [{ type: "tool_use", id: "t9", name: "Monitor", input: { description: "Messages from the README page" } }] } }),
+    launch("2026-10-22T10:00:02Z", { taskId: "m1", timeoutMs: 60_000, persistent: false }, "t9"),
+  ];
   const tail = [
     launch("2026-10-22T10:00:00Z", { status: "async_launched", taskId: "w1", taskType: "local_workflow", workflowName: "review-changes" }),
-    launch("2026-10-22T10:00:01Z", { stdout: "", stderr: "", backgroundTaskId: "b1" }, "t2"),
+    ...shell("b1", "Watch the OD1 build until it finishes", "2026-10-22T10:00:01Z"),
+    ...monitor,
   ].join("\n");
-  assert.deepEqual(parseTail(tail).tasks?.map((t) => [t.kind, t.label]), [["workflow", "review-changes"]]);
-});
-
-test("a background shell counts only when its description says it waits", () => {
-  const tail = [
-    ...shell("b1", "Watch the OD1 build until it finishes", "2026-10-22T10:00:00Z"),
-    ...shell("b2", "Start the dev server", "2026-10-22T10:00:01Z"),
-    ...shell("b3", "Wait for the ephemeral to start", "2026-10-22T10:00:02Z"),
-    notify("b3", "completed"),
-  ].join("\n");
-  assert.deepEqual(parseTail(tail).tasks?.map((t) => [t.kind, t.label]), [["shell", "Watch the OD1 build until it finishes"]]);
+  assert.deepEqual(parseTail(tail).tasks?.map((t) => t.label), ["review-changes"]);
 });

@@ -183,7 +183,7 @@ test("a registry status of shell means the turn finished: a background shell may
   assert.equal(one()?.detail, "Pushed the fix.");
 });
 
-const agentTask = (at: number) => ({ id: "a1", kind: "agent" as const, label: "Review the design", at });
+const agentTask = (at: number) => ({ id: "a1", label: "Review the design", at });
 
 test("a finished turn with a helper still out waits on it, not on you", () => {
   const { store, hook, one } = setup();
@@ -208,22 +208,6 @@ test("when unsure, a desk shows Finished instead of waiting on background work",
   assert.equal(finished({ tasks: [agentTask(200)] }), "background");
   assert.equal(finished({ lastText: "Which option do you want?", tasks: [agentTask(200)] }), "review", "it asked you something");
   assert.equal(finished({ tasks: [agentTask(200)] }, 300), "review", "launched by an earlier process");
-  const monitor = { id: "m1", kind: "monitor" as const, label: "CI", at: 200, expiresAt: 2_000_000 };
-  assert.equal(finished({ promptAt: 150, tasks: [monitor] }), "background");
-  assert.equal(finished({ promptAt: 250, tasks: [monitor] }), "review", "started before your last prompt");
-  assert.equal(finished({ promptAt: 150, tasks: [{ ...monitor, persistent: true }] }), "review", "a standing watch");
-  assert.equal(finished({ promptAt: 150, tasks: [{ ...monitor, expiresAt: 500 }] }), "review", "expired");
-});
-
-test("a waiting shell counts only while the registry says a shell runs", () => {
-  const { store, one } = setup();
-  const tr = { title: "", lastText: "I'll pick up the tests when the watcher reports.", tasks: [{ id: "b1", kind: "shell" as const, label: "Watch the OD1 build", at: 200 }] };
-  store.applyRegistry([{ reg: reg("shell", { startedAt: 100 }), tr }]);
-  assert.equal(one()?.state, "background");
-  assert.equal(one()?.detail, "Watch the OD1 build");
-  assert.deepEqual(one()?.helpers, []);
-  store.applyRegistry([{ reg: reg("idle", { startedAt: 100 }), tr }]);
-  assert.equal(one()?.state, "review", "the shell ended without a notice in the tail");
 });
 
 test("a prompt, a jump, or a prompt in the transcript sets the last interaction", () => {
