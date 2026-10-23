@@ -8,7 +8,8 @@
       "Edit(/.githooks/**)",
       "Edit(/scripts/no-suppressions.sh)",
       "Edit(/.claude/settings.json)",
-      "Edit(/.claude/hooks/**)"
+      "Edit(/.claude/hooks/**)",
+      "Edit(/web/tsconfig.json)"
     ],
     "ask": [
       "Edit(/package.json)"
