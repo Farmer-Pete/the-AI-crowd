@@ -9,7 +9,8 @@
       "Edit(/scripts/no-suppressions.sh)",
       "Edit(/.claude/settings.json)",
       "Edit(/.claude/hooks/**)",
-      "Edit(/web/tsconfig.json)"
+      "Edit(/web/tsconfig.json)",
+      "Edit(/.github/workflows/**)"
     ],
     "ask": [
       "Edit(/package.json)"
