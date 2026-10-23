@@ -6,9 +6,17 @@
   "license": "MIT",
   "scripts": {
     "start": "node src/server.ts",
-    "test": "node --test"
+    "test": "node --test",
+    "check": "tsc && oxlint --deny-warnings && knip && jscpd --exit-code --reporters console src web && sh scripts/no-suppressions.sh && node --test"
   },
   "engines": {
     "node": ">=26"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.4",
+    "jscpd": "5.4.0",
+    "knip": "6.40.0",
+    "oxlint": "1.87.0",
+    "typescript": "7.0.2"
   }
 }

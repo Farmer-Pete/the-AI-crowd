@@ -45,6 +45,17 @@ cmux new-pane --type browser --placement dock --url http://localhost:4747
 
 In the Dock, ⌥⌘B shows or hides it, and ⇧⌘E focuses it with the top agent already picked. ↑↓ pick an agent, and Enter jumps to it. Those are cmux's default keys. The Dock shows yours if you changed them.
 
+## Working on it
+
+Running The AI Crowd needs nothing installed. The checks do:
+
+```sh
+npm install
+git config core.hooksPath .githooks
+```
+
+After that, every commit runs `npm run check`: the TypeScript compiler, oxlint, knip for unused code, jscpd for copy-paste, a scan for comments that switch a check off, and the tests. `any`, `!` assertions, and empty `catch` blocks fail the commit. `.npmrc` turns off install scripts, so `npm install` runs no package code.
+
 ## License
 
 [MIT](LICENSE)

@@ -1,0 +1,20 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["typescript", "unicorn", "oxc", "import", "node"],
+  "categories": { "correctness": "error", "suspicious": "error" },
+  "env": { "browser": true, "node": true, "es2024": true },
+  "rules": {
+    "typescript/no-explicit-any": "error",
+    "typescript/no-non-null-assertion": "error",
+    "no-empty": "error",
+    // Leaving out fields by destructuring the rest is how store.ts drops server-only fields.
+    "no-unused-vars": ["error", { "ignoreRestSiblings": true }],
+    // esc() in render.ts matches control characters on purpose, to strip them.
+    "no-control-regex": "off",
+    // Datastar's local signals start with an underscore: _state, _toast.
+    "no-underscore-dangle": "off"
+  },
+  "overrides": [
+    { "files": ["src/*.test.ts"], "rules": { "typescript/no-non-null-assertion": "off" } }
+  ]
+}
