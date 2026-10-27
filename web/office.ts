@@ -22,6 +22,9 @@ let picked: Pick | undefined;               // the desk or list row picked with 
 
 // /demo shows the scripted demo agents through this same page. Its stream and every action carry demo=1.
 const DEMO = location.pathname === "/demo";
+// /demo?only=review,shells freezes the demo on those states. The stream and the actions both need it,
+// or a click names a desk the server's unfiltered demo doesn't have.
+const ONLY = new URLSearchParams(location.search).get("only");
 
 // The page's fixed elements. A missing one is a broken page, so fail loudly.
 function byId<T extends HTMLElement = HTMLElement>(id: string): T {
@@ -42,6 +45,7 @@ const targetElement = (e: Event) => (e.target instanceof Element ? e.target : nu
 function post(path: string) {
   const url = new URL(path, location.origin);
   if (DEMO) url.searchParams.set("demo", "1");
+  if (DEMO && ONLY) url.searchParams.set("only", ONLY);
   byId("actions").dispatchEvent(new CustomEvent("crowd-post", { detail: url.pathname + url.search }));
 }
 
@@ -186,6 +190,19 @@ function hourglass(c: Ctx, cx: number, cy: number, t: number) {
   if (p < 1) px(c, -0.5, -0.5, 1, 1, "#f2b233"); // the falling grain in the neck
   c.restore();
 }
+// Two meshed gears on the screen of a monitor at (mx, my), turning opposite ways.
+// Each tooth steps one pixel along its side, so the gears turn without blurring.
+function gears(c: Ctx, mx: number, my: number, t: number) {
+  const o = (Math.floor(t * 4) % 3) - 1;
+  gear(c, mx + 5, my + 7, o, "#7dff8a");
+  gear(c, mx + 11, my + 5, -o, "#4fbf5c");
+}
+// A 7 x 7 gear centered on pixel (cx, cy): a rounded body, a hub, and one tooth per side, shifted o pixels clockwise.
+function gear(c: Ctx, cx: number, cy: number, o: number, col: string) {
+  px(c, cx - 2, cy - 1, 5, 3, col); px(c, cx - 1, cy - 2, 3, 5, col);
+  px(c, cx + o, cy - 3, 1, 1, col); px(c, cx + 3, cy + o, 1, 1, col); px(c, cx - o, cy + 3, 1, 1, col); px(c, cx - 3, cy - o, 1, 1, col);
+  px(c, cx, cy, 1, 1, "#0d1a10");
+}
 function glyph(c: Ctx, ch: Glyph, x: number, y: number, col: string) { GLYPHS[ch].forEach((row, j) => [...row].forEach((b, i) => b === "1" && px(c, x + i, y + j, 1, 1, col))); }
 function bubble(c: Ctx, x: number, y: number, chars: Glyph[], col: string) {
   const w = chars.length * 4 + 3;
@@ -326,7 +343,11 @@ function drawDesk(c: Ctx, s: Slot, t: number, rowWidth = 0, glyphs = true) {
   const mx = x + 31, my = y + 8;
   px(c, mx, my, 17, 14, "#cfc6aa"); px(c, mx + 6, my + 14, 5, 2, "#b3aa8e");
   const scr = (col: string) => px(c, mx + 2, my + 2, 13, 9, col);
-  switch (a.state) {
+  // A Finished desk with a background shell still running shows gears. Hover to read what runs.
+  // They don't say the session waits on it: a dev server and an `eph wait` look the same.
+  const shells = a.shells?.length ?? 0;
+  if (shells) { scr("#0d1a10"); gears(c, mx, my, t); }
+  else switch (a.state) {
     case "working": scr("#0d1a10"); for (let i = 0; i < 4; i++) px(c, mx + 3, my + 3 + i * 2, 3 + ((Math.floor(t * 5) + i * 3) % 9), 1, "#7dff8a"); break;
     case "background":
       scr("#15110a");
@@ -400,7 +421,9 @@ function speech(c: Ctx, s: Slot, scale: number, alpha = 1) {
   // A working agent just says what it's doing. Asks, errors, and results keep their label.
   const label = a.state === "working" ? "" : a.detailLabel;
   c.font = '12px "IBM Plex Mono", monospace';
-  const lines = wrap(c, `${label ? label.toUpperCase() + ": " : ""}${a.detail}`, CELL_W * scale - 30, 4);
+  const maxW = CELL_W * scale - 30;
+  const shells = a.shells?.length ? wrap(c, `STILL RUNNING: ${a.shells.map((h) => h.label).join(", ")}`, maxW, 2) : [];
+  const lines = [...wrap(c, `${label ? label.toUpperCase() + ": " : ""}${a.detail}`, maxW, 4), ...shells];
   const w = Math.max(...lines.map((l) => c.measureText(l).width)) + 18;
   const h = lines.length * 15 + 11;
   // The box stays centred on its desk, so it never runs into the next one. The tail points
@@ -425,6 +448,8 @@ const onChatter = (wall: Wall | null, lx: number, ly: number) => !!wall?.chatter
 const onExtinguisher = (wall: Wall | null, lx: number, ly: number, w: number) => !!wall && lx >= w - 21 && lx < w - 10 && ly >= 3 && ly < 25;
 
 const badgeHit = (s: Slot, lx: number, ly: number) => s.a.helpers.length > 0 && lx >= s.x + 36 && lx < s.x + 52 && ly >= s.y - 9 && ly < s.y;
+// The monitor's screen, where the gears turn.
+const shellHit = (s: Slot, lx: number, ly: number) => !!s.a.shells?.length && lx >= s.x + 33 && lx < s.x + 46 && ly >= s.y + 10 && ly < s.y + 19;
 const deskHit = (s: Slot, lx: number, ly: number) => lx >= s.x && lx < s.x + CELL_W && ly >= s.y - 10 && ly < s.y + CELL_H - 10;
 
 // Mounts a canvas office into `host`. scale = screen pixels per logical pixel.
@@ -453,10 +478,12 @@ function mountOffice(host: HTMLElement, scale: number) {
     const r = canvas.getBoundingClientRect();
     const lx = (e.clientX - r.left) / scale, ly = (e.clientY - r.top) / scale;
     const hit = slots.find((s) => badgeHit(s, lx, ly));
+    const shellsAt = slots.find((s) => shellHit(s, lx, ly))?.a.shells;
     hoverId = slots.find((s) => deskHit(s, lx, ly))?.a.id;
     canvas.title = onSwitch(wall, lx, ly) ? (settings.muted ? "Turn sound back on" : "Mute all sounds")
       : onChatter(wall, lx, ly) ? (settings.popBubbles ? "Turn off chatter: only urgent asks pop up" : "Turn chatter back on")
       : onExtinguisher(wall, lx, ly, lw) ? "Put out the oldest fire"
+      : shellsAt ? `Still running: ${shellsAt.map((h) => h.label).join(", ")}`
       : hit ? `Helpers: ${hit.a.helpers.map((h) => h.label).join(", ")}` : "";
   });
   canvas.addEventListener("mouseleave", () => { hoverId = undefined; });
@@ -802,7 +829,7 @@ addEventListener("blur", () => { if (inDock() && picked) select(undefined); });
 
 Object.assign(window, {
   crowd: {
-    stream: DEMO ? "/events?demo=1" : "/events",
+    stream: DEMO ? `/events?demo=1${ONLY ? `&only=${encodeURIComponent(ONLY)}` : ""}` : "/events",
     patched(patch: { _state?: unknown; _toast?: unknown } | undefined) {
       if (typeof patch?._state === "string") update(JSON.parse(patch._state));
       if (typeof patch?._toast === "string") toast(JSON.parse(patch._toast).text);

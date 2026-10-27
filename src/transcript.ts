@@ -18,7 +18,8 @@ type ToolUse = { id: string; name: string; input: Rec; pending: boolean };
 // shells are left out: they only listen, and what they listen for may be CI, a reviewer, or you.
 export type Task = { id: string; label: string; at: number };
 // promptAt: when you last typed a prompt (a "user" record with origin.kind "human").
-export type Transcript = { title: string; tool?: ToolUse; lastText: string; promptAt?: number; tasks?: Task[] };
+// shells: background shells still running, labeled with the description Claude gave the command.
+export type Transcript = { title: string; tool?: ToolUse; lastText: string; promptAt?: number; tasks?: Task[]; shells?: Task[] };
 
 const cache = new Map<string, Transcript & { mtimeMs: number }>();
 
@@ -49,7 +50,7 @@ export function parseTail(text: string): Transcript {
     if (!line.startsWith("{")) continue;
     try { recs.push(obj(JSON.parse(line))); } catch { /* partial first line */ }
   }
-  return { ...latest(recs), tasks: openTasks(recs) };
+  return { ...latest(recs), ...openTasks(recs) };
 }
 
 const contentOf = (rec: Rec): Rec[] => {
@@ -80,25 +81,33 @@ function latest(recs: Rec[]): Transcript {
 
 // Walks the records oldest first. Claude Code records each launch in the tool result's toolUseResult,
 // and says a task ended with a <task-notification> that carries a <status>, or with a TaskStop result.
-function openTasks(recs: Rec[]): Task[] {
+// A background shell's launch has a backgroundTaskId instead, and it ends the same way.
+function openTasks(recs: Rec[]): { tasks: Task[]; shells: Task[] } {
   const running = new Map<string, Task>();
+  const shells = new Map<string, Task>();
+  const descriptions = new Map<unknown, string>(); // tool_use id -> the description Claude gave the call
+  const end = (id: string) => { running.delete(id); shells.delete(id); };
   for (const rec of recs) {
     const at = timeOf(rec) || 0;
+    if (rec.type === "assistant") for (const c of contentOf(rec)) if (c.type === "tool_use") descriptions.set(c.id, str(obj(c.input).description) ?? "");
     if (rec.type === "user") {
       const r = obj(rec.toolUseResult);
       if (r.status === "async_launched" && typeof r.agentId === "string") {
         running.set(r.agentId, { id: r.agentId, label: String(r.description || "a helper"), at });
       } else if (r.status === "async_launched" && r.taskType === "local_workflow" && typeof r.taskId === "string") {
         running.set(r.taskId, { id: r.taskId, label: String(r.workflowName || "a workflow"), at });
+      } else if (typeof r.backgroundTaskId === "string") {
+        const use = contentOf(rec).find((c) => c.type === "tool_result")?.tool_use_id;
+        shells.set(r.backgroundTaskId, { id: r.backgroundTaskId, label: descriptions.get(use) || "a shell", at });
       }
-      if (typeof r.task_id === "string") running.delete(r.task_id); // TaskStop
+      if (typeof r.task_id === "string") end(r.task_id); // TaskStop
     }
     for (const note of notifications(rec)) {
       const id = note.match(/<task-id>(\w+)<\/task-id>/)?.[1];
-      if (id && /<status>\w+<\/status>/.test(note)) running.delete(id);
+      if (id && /<status>\w+<\/status>/.test(note)) end(id);
     }
   }
-  return [...running.values()];
+  return { tasks: [...running.values()], shells: [...shells.values()] };
 }
 
 // A notification is queued (a queue-operation), then delivered as a queued command or a user message.

@@ -16,6 +16,7 @@ It uses no AI and spends no tokens. It reads the files Claude Code already write
 | ![Asked a question](docs/states/question.png) | **Asked a question.** Hand up, with the question in the bubble. Needs you. |
 | ![Error](docs/states/error.png) | **Error.** An API error stopped the turn, and the monitor is on fire. Needs you. |
 | ![Finished](docs/states/finished.png) | **Finished.** Leaning back with tea until you look at the result. Falls asleep 30 minutes after you look, or after 2 hours if you never do. |
+| ![Finished, with a shell running](docs/states/shell.png) | **Finished, with a shell running.** Gears turn on the monitor while a background shell still runs, such as a dev server or a wait on a deploy. The agent may or may not be waiting on it, so it still counts as Finished. Hover the screen to see what's running. |
 | ![Asleep](docs/states/asleep.png) | **Asleep.** Nothing new for a while. |
 
 ## Install
@@ -28,7 +29,7 @@ cd the-AI-crowd
 npm start
 ```
 
-Run `npm start` from a cmux terminal so The AI Crowd can switch cmux panes. Then open <http://localhost:4747>, or <http://localhost:4747/demo> to see it with demo agents.
+Run `npm start` from a cmux terminal so The AI Crowd can switch cmux panes. Then open <http://localhost:4747>, or <http://localhost:4747/demo> to see it with demo agents. To see only some states, add `?only=` with a comma-separated list, such as `/demo?only=review,shells`. Use the state names from `src/types.ts`. `shells` picks the desks with a background shell running.
 
 For exact states (permission vs. question, API errors), install the Claude Code plugin. In Claude Code:
 

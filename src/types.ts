@@ -17,6 +17,8 @@ export type Agent = {
   since: number;
   detail: string;
   helpers: Helper[];
+  // Background shells still running. Shown, never counted as waiting: an `eph wait` and a dev server look the same.
+  shells?: Helper[];
   // More about the session, shown on hover: the cmux workspace description, when there is one.
   about?: string;
   // A fixed desk position. Demo agents use it so the office looks the same every time.

@@ -43,7 +43,14 @@ type View = { demo: boolean; store: Store; settings: Settings; agents: () => Vie
 const LIVE: View = { demo: false, store, settings, agents: () => store.view(), hooks: store.hooksSeen };
 const demoStore = createStore();
 const DEMO: View = { demo: true, store: demoStore, settings: { ...DEFAULTS }, agents: () => demoStore.view(demoAgents(Date.now())), hooks: () => true };
-const viewFor = (url: URL) => (url.searchParams.has("demo") ? DEMO : LIVE);
+// /demo?only=review,shells shows just those states, each desk frozen in one (see demoAgents).
+function viewFor(url: URL): View {
+  if (!url.searchParams.has("demo")) return LIVE;
+  const only = url.searchParams.get("only");
+  if (!only) return DEMO;
+  const states = new Set(only.split(","));
+  return { ...DEMO, agents: () => demoStore.view(demoAgents(Date.now(), states)) };
+}
 
 const clients = new Map<ServerResponse, View>();
 // The user's cmux keys for the right sidebar, shown in the Dock hint.

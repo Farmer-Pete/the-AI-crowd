@@ -140,6 +140,10 @@ export function createStore(clock: () => number = Date.now) {
       s.about = renamed?.description || undefined;
       s.target = pane;
       s.awaiting = awaited(tr, reg);
+      // Only while the registry says a shell runs, and only shells from this process.
+      s.shells = reg.status === "shell"
+        ? (tr.shells ?? []).filter((t) => t.at >= (reg.startedAt ?? 0)).map(({ id, label }) => ({ id, label }))
+        : [];
       if (!s.hooked) infer(s, reg, tr);
     }
     for (const [id, s] of sessions) if (!ids.has(id) && clock() - s.lastHookAt > HOOK_GRACE_MS) sessions.delete(id);
@@ -156,7 +160,9 @@ export function createStore(clock: () => number = Date.now) {
     const tier: Tier = URGENT.has(state) ? "urgent" : state === "review" && !seenIt ? "review" : "quiet";
     const label = state === "review" && seenIt ? "Seen" : LABEL[state];
     const touchedAt = Math.max(touched.get(a.id) ?? 0, a.touchedAt ?? 0) || undefined;
-    return { ...a, state, tier, label, detailLabel: DETAIL_LABEL[state], touchedAt };
+    // Running shells only matter on a Finished desk, where you'd ask whether it waits on one.
+    const shells = state === "review" ? a.shells : undefined;
+    return { ...a, state, tier, label, detailLabel: DETAIL_LABEL[state], touchedAt, shells };
   }
 
   // Everyone, urgent first, then longest waiting first.

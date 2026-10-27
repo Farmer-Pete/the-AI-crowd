@@ -77,3 +77,9 @@ test("workflows count; Monitors and background shells don't, since they may wait
   ].join("\n");
   assert.deepEqual(parseTail(tail).tasks?.map((t) => t.label), ["review-changes"]);
 });
+
+test("a background shell is listed by its description until its notification has a status", () => {
+  const tail = shell("b1", "Wait for the preview deploy to finish", "2026-10-22T10:00:01Z").join("\n");
+  assert.deepEqual(parseTail(tail).shells, [{ id: "b1", label: "Wait for the preview deploy to finish", at: Date.parse("2026-10-22T10:00:01Z") }]);
+  assert.deepEqual(parseTail([tail, notify("b1", "completed")].join("\n")).shells, []);
+});

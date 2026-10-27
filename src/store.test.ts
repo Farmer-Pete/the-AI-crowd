@@ -176,6 +176,26 @@ test("demo agents never doze off on their own", () => {
   assert.equal(store.view([demo])[0]?.state, "review");
 });
 
+test("a live session lists its running shells only while the registry says shell", () => {
+  const { store, one } = setup();
+  const tr = { title: "", lastText: "The box is still building.", shells: [{ id: "b1", label: "Wait for the deploy", at: 5 }] };
+  store.applyRegistry([{ reg: reg("shell"), tr }]);
+  assert.deepEqual(one()?.shells, [{ id: "b1", label: "Wait for the deploy" }]);
+  store.applyRegistry([{ reg: reg("idle"), tr }]);
+  assert.deepEqual(one()?.shells, []);
+});
+
+test("running shells show only on a Finished desk", () => {
+  let now = 0;
+  const store = createStore(() => now);
+  const shells = [{ id: "s", label: "Start the dev server" }];
+  const agent = (state: "review" | "working") => ({ id: state, source: "live" as const, title: "", project: "", cwd: "~", state, since: 0, detail: "", helpers: [], shells });
+  const shown = () => store.view([agent("review"), agent("working")]).map((a) => [a.id, a.state, a.shells?.length ?? 0]);
+  assert.deepEqual(shown(), [["review", "review", 1], ["working", "working", 0]]);
+  now = UNSEEN_ASLEEP_AFTER_MS; // the Finished desk falls asleep
+  assert.deepEqual(shown(), [["review", "idle", 0], ["working", "working", 0]]);
+});
+
 test("a registry status of shell means the turn finished: a background shell may be a server", () => {
   const { store, one } = setup();
   store.applyRegistry([{ reg: reg("shell"), tr: { title: "", lastText: "Pushed the fix." } }]);

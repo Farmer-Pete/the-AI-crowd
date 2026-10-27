@@ -27,7 +27,8 @@ const jumpAttr = (id: string) => (SAFE_ID.test(id) ? ` data-id="${id}"` : "");
 
 function row(a: ViewAgent, now: number): string {
   const detail = `${a.detailLabel ? `<span class="dl ${a.tier}">${a.detailLabel}</span>` : ""}${esc(a.detail)}`;
-  const helpers = a.helpers.map((h) => `<tr class="helper"><td colspan="4">↳ helper: ${esc(h.label)}</td></tr>`).join("");
+  const sub = (kind: string, list: { label: string }[]) => list.map((h) => `<tr class="helper"><td colspan="4">↳ ${kind}: ${esc(h.label)}</td></tr>`).join("");
+  const helpers = sub("helper", a.helpers) + sub("shell", a.shells ?? []);
   return `<tr class="row"${jumpAttr(a.id)}>` +
     `<td><div class="who"><img class="portrait" data-portrait="${esc(a.id)}" alt=""><div>` +
     `<small class="proj" title="${esc(a.cwd)}">${esc(a.project)}</small><b${a.about ? ` title="${esc(a.about)}"` : ""}>${esc(a.title)}</b> <span class="src">${a.source}</span></div></div></td>` +

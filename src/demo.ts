@@ -5,7 +5,7 @@
 
 import type { Agent, State } from "./types.ts";
 
-type Segment = { state: State; secs: number; detail: string; padMin?: number; helpers?: string[] };
+type Segment = { state: State; secs: number; detail: string; padMin?: number; helpers?: string[]; shells?: string[] };
 // cast picks the character: the session id seeds the look. The seeds give the demo a cast spread
 // evenly across skin tones and archetypes (found by trying seeds against lookFor in web/office.ts).
 type Script = { project: string; title: string; cwd: string; offset: number; cast: number; segments: [Segment, ...Segment[]] };
@@ -92,12 +92,37 @@ const SCRIPTS: Script[] = [
       { state: "review", secs: 20, detail: "Refreshes now share one in-flight request." },
     ],
   },
+  // Two turns that end with a background shell still out: one the session waits on, one it doesn't.
+  {
+    project: "preview-env", title: "Preview environment", cwd: "~/Code/preview-env", offset: 9, cast: 61,
+    segments: [
+      { state: "working", secs: 10, detail: "Starting the preview deploy" },
+      { state: "review", secs: 40, detail: "The box is still building. I'll pick up when it finishes.", shells: ["Wait for the preview deploy to finish"] },
+      { state: "working", secs: 15, detail: "Importing the sample data" },
+      { state: "review", secs: 20, detail: "The preview is up at preview-212.example.dev." },
+    ],
+  },
+  {
+    project: "marketing-site", title: "Pricing page copy", cwd: "~/Code/marketing-site", offset: 17, cast: 40,
+    segments: [
+      { state: "working", secs: 12, detail: "Editing src/pages/pricing.astro", shells: ["Start the dev server"] },
+      { state: "review", secs: 45, detail: "The pricing page shows the new tiers. The dev server is up at :4321.", shells: ["Start the dev server"] },
+    ],
+  },
 ];
 
 const BOOT = Date.now();
 
-export function demoAgents(now: number): Agent[] {
-  return SCRIPTS.map((s, seat) => {
+// only: show just these states, each desk frozen in one segment, so you don't wait for a state to
+// come round. "shells" picks the segments with a background shell running.
+function frozen(only: Set<string>): Script[] {
+  return SCRIPTS.flatMap((s) => s.segments
+    .filter((g) => only.has(g.state) || (only.has("shells") && g.shells?.length))
+    .map((g, i): Script => ({ ...s, cast: s.cast + i, segments: [g] })));
+}
+
+export function demoAgents(now: number, only?: Set<string>): Agent[] {
+  return (only ? frozen(only) : SCRIPTS).map((s, seat) => {
     const cycle = s.segments.reduce((n, g) => n + g.secs, 0);
     const elapsed = (now - BOOT) / 1000 + s.offset;
     const round = Math.floor(elapsed / cycle);
@@ -124,6 +149,7 @@ export function demoAgents(now: number): Agent[] {
       since: start - (seg.padMin ?? 0) * 60_000,
       detail: seg.detail,
       helpers: (seg.helpers ?? []).map((label, i) => ({ id: `${id}-h${i}`, label })),
+      shells: (seg.shells ?? []).map((label, i) => ({ id: `${id}-s${i}`, label })),
       seat,
     };
   });
