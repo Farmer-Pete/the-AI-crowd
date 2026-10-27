@@ -125,8 +125,8 @@ export function createStore(clock: () => number = Date.now) {
     else set(s, "idle", firstLine(tr.lastText), at);
   }
 
-  // Claude Code names a session once, early on. A cmux workspace someone renamed (its title
-  // differs from the terminal's own title) says better what the session works on now.
+  // Claude Code names a session once, early on. A name someone picked says better what the session
+  // works on now: a renamed cmux workspace (its title differs from the terminal's own title), then /rename.
   function applyRegistry(entries: { reg: RegistryEntry; tr: Transcript; pane?: PaneInfo }[]) {
     const ids = new Set(entries.map((e) => e.reg.sessionId));
     for (const { reg, tr, pane } of entries) {
@@ -135,7 +135,7 @@ export function createStore(clock: () => number = Date.now) {
       s.cwd = tilde(reg.cwd);
       s.project = basename(reg.cwd);
       const renamed = pane && pane.workspaceTitle && pane.workspaceTitle !== pane.surfaceTitle ? pane : undefined;
-      s.title = renamed?.workspaceTitle || tr.title || reg.name || s.project;
+      s.title = renamed?.workspaceTitle || (reg.userNamed ? reg.name : "") || tr.title || reg.name || s.project;
       s.touchedAt = tr.promptAt;
       s.about = renamed?.description || undefined;
       s.target = pane;

@@ -12,6 +12,7 @@ export type RegistryEntry = {
   sessionId: string;
   cwd: string;
   name: string;
+  userNamed: boolean; // nameSource "user": someone ran /rename
   // busy, waiting, idle, or shell: idle with a background shell still running (from Claude Code's source)
   status: string;
   statusUpdatedAt: number;
@@ -35,6 +36,7 @@ export async function readRegistry(): Promise<RegistryEntry[]> {
         sessionId: s.sessionId,
         cwd: String(s.cwd ?? ""),
         name: String(s.name ?? ""),
+        userNamed: s.nameSource === "user",
         status: String(s.status ?? ""),
         statusUpdatedAt: Number(s.statusUpdatedAt ?? s.updatedAt ?? Date.now()),
         startedAt: typeof s.startedAt === "number" ? s.startedAt : undefined,

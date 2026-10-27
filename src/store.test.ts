@@ -96,7 +96,7 @@ test("SessionEnd removes the session", () => {
 });
 
 const reg = (status: string, extra: Partial<RegistryEntry> = {}): RegistryEntry => ({
-  pid: 1, sessionId: "s1", cwd: "/work/api", name: "api-1", status, statusUpdatedAt: 900_000, ...extra,
+  pid: 1, sessionId: "s1", cwd: "/work/api", name: "api-1", userNamed: false, status, statusUpdatedAt: 900_000, ...extra,
 });
 
 test("without hooks, the registry and transcript give a best guess", () => {
@@ -155,6 +155,15 @@ test("a workspace that only mirrors the terminal title doesn't override the AI t
   store.applyRegistry([{ reg: reg("idle"), tr: { title: "Retry backoff", lastText: "" }, pane: pane("zsh", "zsh") }]);
   assert.equal(one()?.title, "Retry backoff");
   assert.equal(one()?.about, undefined);
+});
+
+test("a /rename beats the AI title, and a renamed workspace beats both", () => {
+  const { store, one } = setup();
+  const named = reg("idle", { name: "SEG ticket triage", userNamed: true });
+  store.applyRegistry([{ reg: named, tr: { title: "SEG-292 installer updater", lastText: "" } }]);
+  assert.equal(one()?.title, "SEG ticket triage");
+  store.applyRegistry([{ reg: named, tr: { title: "SEG-292 installer updater", lastText: "" }, pane: pane("SEG-300", "zsh") }]);
+  assert.equal(one()?.title, "SEG-300");
 });
 
 test("a finished turn nobody looks at falls asleep after 2 hours", () => {
