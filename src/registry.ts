@@ -31,6 +31,8 @@ export async function readRegistry(): Promise<RegistryEntry[]> {
     try {
       const s = JSON.parse(await readFile(join(SESSIONS_DIR, f), "utf8"));
       if (typeof s.pid !== "number" || typeof s.sessionId !== "string" || !alive(s.pid)) continue;
+      // Headless `claude -p` and Agent SDK runs register as "sdk-cli". Nobody can answer them, so no desk.
+      if (s.entrypoint === "sdk-cli") continue;
       out.push({
         pid: s.pid,
         sessionId: s.sessionId,
